@@ -21,11 +21,37 @@ export function supervisorPath(): string {
   return path.join(packageRoot(), 'native', 'dsh-eval-supervisor')
 }
 
-/** The DSH home: $DSH_HOME or ~/.dsh. */
+/** Launcher-provided facts; nothing here is a fixed install path. */
+let runtimeHome: string | undefined
+let runtimeProfileDir: string | undefined
+
+/** Record the launcher's profile/home paths. */
+export function configureRuntimeContext(next: { home?: string; profileDir?: string }): void {
+  if (next.home !== undefined && next.home !== '') runtimeHome = next.home
+  if (next.profileDir !== undefined && next.profileDir !== '') runtimeProfileDir = next.profileDir
+}
+
+/** The DSH home: launcher profile context, then $DSH_HOME, then ~/.dsh. */
 export function dshHome(): string {
+  if (runtimeHome !== undefined) return runtimeHome
   return process.env.DSH_HOME && process.env.DSH_HOME !== ''
     ? process.env.DSH_HOME
     : path.join(os.homedir(), '.dsh')
+}
+
+/** Candidate node_modules directories, launcher profile first and then profiles/*. */
+function profileNodeModules(): string[] {
+  const out: string[] = []
+  if (runtimeProfileDir !== undefined) out.push(path.join(runtimeProfileDir, 'node_modules'))
+  const profiles = path.join(dshHome(), 'profiles')
+  try {
+    for (const entry of fs.readdirSync(profiles, { withFileTypes: true })) {
+      if (entry.isDirectory()) out.push(path.join(profiles, entry.name, 'node_modules'))
+    }
+  } catch {
+    // No profile tree (custom launcher); the caller falls back to its own paths.
+  }
+  return out
 }
 
 /** Root for run records, audits, and sandbox policy files. */
@@ -67,12 +93,11 @@ function packageDir(name: string): string | undefined {
   }
   if (name === '@deepseek-ai/dsh-ptc-runtime-node') {
     candidates.push(path.join(process.cwd(), 'packages', 'ptc-runtime', 'ptc-runtime-node'))
-    candidates.push(path.join(dshHome(), 'profiles', 'web', 'node_modules', name))
   }
   if (name === '@deepseek-ai/dsh-subprocess') {
     candidates.push(path.join(process.cwd(), 'packages', 'subprocess', 'subprocess'))
-    candidates.push(path.join(dshHome(), 'profiles', 'web', 'node_modules', name))
   }
+  for (const modules of profileNodeModules()) candidates.push(path.join(modules, name))
   for (const candidate of candidates) {
     try {
       if (fs.statSync(path.join(candidate, 'package.json')).isFile()) return fs.realpathSync.native(candidate)

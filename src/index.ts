@@ -13,6 +13,7 @@ import { Config } from './config.ts'
 import { Guard } from './guard.ts'
 import { registerRoutes } from './routes.ts'
 import { TANK_DEFINITION, TASKS, TaskService } from './task.ts'
+import { configureRuntimeContext } from './sandbox.ts'
 
 export { Config } from './config.ts'
 export type { Config as EvalGuardConfig } from './config.ts'
@@ -30,6 +31,10 @@ export const inject = ['sessions', 'agents', 'tools', 'sandbox', 'sandboxPolicy'
  */
 export function apply(ctx: Context, config: Partial<import('./config.ts').Config>): void {
   ctx.inject(['sessions', 'agents', 'tools', 'sandbox', 'sandboxPolicy', 'workspaceRegistry'], (child) => {
+    const getService = (ctx as unknown as { get?: (key: string) => unknown }).get
+    const profile = (typeof getService === 'function' ? getService.call(ctx, 'profileContext') : undefined) as
+      { home?: string; dir?: string } | undefined
+    configureRuntimeContext({ home: profile?.home, profileDir: profile?.dir })
     const services = {
       sessions: child.get('sessions') as any,
       agents: child.get('agents') as any,

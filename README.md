@@ -34,7 +34,7 @@ node scripts/build-native.mjs
 ~~~bash
 scripts/install.sh web
 # 如果脚本找不到 dsh 命令：
-DSH_CHECKOUT=/home/huhu233/otherProject/deepseek-harness scripts/install.sh web
+DSH_CHECKOUT=/path/to/deepseek-harness scripts/install.sh web
 # 然后重启 dsh web
 ~~~
 
