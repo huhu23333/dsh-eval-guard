@@ -1,0 +1,8 @@
+node_modules/
+lib/
+*.tgz
+.dsh-test-*
+.wrap-test-*
+.ptc-test-*
+.runtime-test-*
+test/dist/

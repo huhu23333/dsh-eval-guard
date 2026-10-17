@@ -1,0 +1,6 @@
+# Inserts this plugin's own Loader row.
+# The id below is also the settings namespace: the Settings page reads and
+# writes this entry's config block through ctx.remote.settings.mutate.
+- insert:
+    - id: eval-guard
+      name: dsh-eval-guard

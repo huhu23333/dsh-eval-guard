@@ -1,0 +1,55 @@
+/**
+ * Plugin configuration. The Settings page writes this document through the
+ * shared config-forms service; the host resolves it on every decision.
+ * @module dsh-eval-guard/config
+ */
+import z from '@deepseek-ai/schemastery'
+
+/** Persisted plugin configuration. */
+export interface Config {
+  /** Master switch; off means the plugin must behave as if it were not installed. */
+  enabled: boolean
+  /** Whether a task turn has a wall-clock limit. */
+  timeLimitEnabled: boolean
+  /** Minutes allowed for one user-message-to-turn-end window. */
+  timeLimitMinutes: number
+  /** Extra forbidden absolute paths, one per line, gitignore-like '!' exceptions. */
+  forbiddenPaths: string
+  /** When true the generated default blacklist applies; editing flips this off. */
+  toolBlacklistUseDefault: boolean
+  /** The user's blacklist document, one tool name per line. */
+  toolBlacklist: string
+}
+
+/** Factory defaults. */
+export const DEFAULT_CONFIG: Config = {
+  enabled: false,
+  timeLimitEnabled: true,
+  timeLimitMinutes: 90,
+  forbiddenPaths: '',
+  toolBlacklistUseDefault: true,
+  toolBlacklist: '',
+}
+
+/** The exported schema; the Loader row id is also this document's namespace. */
+export const Config = z.object({
+  enabled: z.boolean().default(false).volatile(),
+  timeLimitEnabled: z.boolean().default(true).volatile(),
+  timeLimitMinutes: z.number().default(90).volatile(),
+  forbiddenPaths: z.string().default('').volatile(),
+  toolBlacklistUseDefault: z.boolean().default(true).volatile(),
+  toolBlacklist: z.string().default('').volatile(),
+})
+
+/** Clamp and normalize a live configuration object. */
+export function resolveConfig(value: Partial<Config> | undefined): Config {
+  const minutes = Number.isFinite(value?.timeLimitMinutes) ? Number(value?.timeLimitMinutes) : 90
+  return {
+    enabled: value?.enabled === true,
+    timeLimitEnabled: value?.timeLimitEnabled !== false,
+    timeLimitMinutes: Math.min(1440, Math.max(1, Math.round(minutes))),
+    forbiddenPaths: typeof value?.forbiddenPaths === 'string' ? value.forbiddenPaths : '',
+    toolBlacklistUseDefault: value?.toolBlacklistUseDefault !== false,
+    toolBlacklist: typeof value?.toolBlacklist === 'string' ? value.toolBlacklist : '',
+  }
+}

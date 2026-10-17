@@ -1,0 +1,109 @@
+{
+  "name": "dsh-eval-guard",
+  "version": "0.1.2",
+  "type": "module",
+  "description": "Evaluation guard for DSH: workspace-only filesystem, no network/subagents, wall-clock limits, and task installation for the meow-ai-arena tank task.",
+  "license": "MIT",
+  "author": {
+    "name": "huhu23333",
+    "email": "107193644+huhu23333@users.noreply.github.com",
+    "url": "https://github.com/huhu23333"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/huhu23333/dsh-eval-guard.git"
+  },
+  "homepage": "https://github.com/huhu23333/dsh-eval-guard#readme",
+  "bugs": {
+    "url": "https://github.com/huhu23333/dsh-eval-guard/issues"
+  },
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "evaluation",
+    "sandbox",
+    "seccomp",
+    "bubblewrap"
+  ],
+  "main": "lib/index.js",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./client": {
+      "types": "./lib/client/index.d.ts",
+      "default": "./lib/client/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "native",
+    "assets",
+    "cordis.patch.yml",
+    "README.md",
+    "scripts"
+  ],
+  "scripts": {
+    "build": "tsdown",
+    "build:native": "node scripts/build-native.mjs",
+    "prepare": "tsdown",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-session",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-client-ui-workspace"
+      ]
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.0-rc.1": "compatible",
+        "0.2.0-rc.2": "compatible",
+        "0.2.1-alpha.1": "compatible",
+        "0.2.1-rc.1": "compatible"
+      },
+      "node": ">=20"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-settings": "*",
+    "@deepseek-ai/schemastery": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-settings": {
+      "optional": true
+    },
+    "@deepseek-ai/schemastery": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tsdown": "^0.22.2",
+    "typescript": "^6.0.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
