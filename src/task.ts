@@ -1,11 +1,10 @@
 /**
- * The tank task pack: workspace extraction, prompt construction, and the one
+ * The tank task pack: packaged workspace.zip install, prompt construction, and the one
  * run record the evaluator later reads.
  * @module dsh-eval-guard/task
  */
 import fs from 'node:fs'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
 import { TANK_TASK, TANK_TASK_LABEL, type CheckResult, type InstallResult, type RunRecord, type TaskInfo } from './shared.ts'
 import type { Guard, TaskDefinition } from './guard.ts'
 import { guardRoot, packageRoot } from './sandbox.ts'
@@ -14,7 +13,7 @@ import { guardRoot, packageRoot } from './sandbox.ts'
 export const TASKS: readonly TaskInfo[] = [{
   id: TANK_TASK,
   label: TANK_TASK_LABEL,
-  description: '1v1 坦克大战 bot：编写 submission/bot.cpp，评测时与基准及其它提交打循环赛。',
+  description: '1v1 坦克大战 bot：解压 workspace.zip 后编写 workspace/submission/bot.cpp，评测时与基准及其它提交打循环赛。',
 }]
 
 /** Format a blacklist for the prompt. */
@@ -42,9 +41,14 @@ export const TANK_DEFINITION: TaskDefinition = {
       '',
       '## 交付',
       '',
-      '- 把最终 bot 保存到工作区内的 submission/bot.cpp（只需要这一个文件）。',
-      '- 交付前检查并关闭所有后台任务；最多 ' + String(options.minutes ?? 90) + ' 分钟，到点会被强制终止。',
+      '- 解压工作区里的 workspace.zip，把最终 bot 保存到解压后的 workspace/submission/bot.cpp（只需要这一个文件）。',
       '- 最后用几句话说明你的策略。',
+      '',
+      '## 时间规则',
+      '',
+      '- 本次是**连续 ' + String(options.minutes ?? 90) + ' 分钟的单次任务**，从对话开始时开始计时。',
+      '- 交付前检查并关闭所有后台任务；到点会被强制终止。',
+      '- clock.py 从解压那一刻开始计算，而实际计时从对话开始计算；它**只能作为参考**，请尽快解压以减小误差。实际时间以评测守护为准。',
       '',
       '## 本次评测禁止调用的工具',
       '',
@@ -52,9 +56,8 @@ export const TANK_DEFINITION: TaskDefinition = {
       '',
       '## 工作区内容',
       '',
-      '工作区根目录就是选手包：先读 README.md 和 RULES.md，规则引擎是 tank.hpp。',
-      '本地工具（arena.py、check、play、batch、vs 等）和起步模板都在工作区里，可直接使用。',
-      'README.md 里提到的上下半场属于原始赛制；clock.py 只是参考，本次是单次任务，以本提示词的时间规则为准。',
+      '工作区里有一个 workspace.zip；解压后进入 workspace/ 目录，先读 README.md 和 RULES.md，规则引擎是 tank.hpp。',
+      '本地工具（arena.py、check、play、batch、vs 等）和起步模板都在解压后的 workspace/ 里，可直接使用。',
       '',
       '开始吧。',
     ].join('\n')
@@ -87,17 +90,21 @@ export class TaskService {
     return { ok: true, workspaceId, path: workspace.path, empty: entries.length === 0, entries }
   }
 
-  /** Extract the task pack to a material directory the manual channel can reveal. */
-  materialDir(): string {
+  /** Copy the packaged workspace.zip to a stable material path for install/manual use. */
+  materialZip(): string {
     const dir = path.join(guardRoot(), 'material', 'tank')
-    const marker = path.join(guardRoot(), 'material', '.tank-complete')
-    if (fs.existsSync(marker) && fs.existsSync(path.join(dir, 'RULES.md'))) return dir
-    fs.rmSync(dir, { recursive: true, force: true })
     fs.mkdirSync(dir, { recursive: true })
-    fs.mkdirSync(path.dirname(marker), { recursive: true })
-    this.extract(TANK_DEFINITION.asset, dir)
-    fs.writeFileSync(marker, 'ok\n', 'utf8')
-    return dir
+    const target = path.join(dir, 'workspace.zip')
+    const source = TANK_DEFINITION.asset
+    if (!fs.existsSync(source)) throw new Error('task asset is missing: ' + source)
+    let stale = true
+    try {
+      stale = !fs.existsSync(target) || fs.statSync(target).size !== fs.statSync(source).size
+    } catch {
+      stale = true
+    }
+    if (stale) fs.copyFileSync(source, target)
+    return target
   }
 
   /** Install the task pack into an empty workspace. */
@@ -114,12 +121,12 @@ export class TaskService {
       return { ok: false, workspaceId, workspacePath: checked.path, error: '请先启用评测守护，再安装评测任务。' }
     }
     try {
-      this.extract(TANK_DEFINITION.asset, checked.path)
+      fs.copyFileSync(this.materialZip(), path.join(checked.path, 'workspace.zip'))
     } catch (error: unknown) {
       return { ok: false, workspaceId, workspacePath: checked.path, error: '复制素材失败：' + (error instanceof Error ? error.message : String(error)) }
     }
     const runId = this.newRunId()
-    const prompt = promptOverride ?? this.guard.promptFor(checked.path, this.materialDir())
+    const prompt = promptOverride ?? this.guard.promptFor(checked.path, this.materialZip())
     const run: RunRecord = {
       runId,
       task: TANK_TASK,
@@ -140,30 +147,15 @@ export class TaskService {
   /** The prompt for manual copying, without installing anything. */
   prompt(workspaceId: string): string {
     const workspace = this.registry.get(workspaceId)
-    return this.guard.promptFor(workspace?.path ?? '', this.materialDir())
+    return this.guard.promptFor(workspace?.path ?? '', this.materialZip())
   }
 
   /** Filesystem paths for the manual channel. */
   manualPaths(workspaceId: string): { source: string; prompt: string } {
     const workspace = this.registry.get(workspaceId)
     return {
-      source: this.materialDir(),
-      prompt: this.guard.promptFor(workspace?.path ?? '', this.materialDir()),
-    }
-  }
-
-  /** Extract a workspace.zip into a destination, stripping the workspace/ prefix. */
-  private extract(zip: string, destination: string): void {
-    if (!fs.existsSync(zip)) throw new Error('task asset is missing: ' + zip)
-    fs.mkdirSync(path.join(guardRoot(), 'tmp'), { recursive: true })
-    const temporary = fs.mkdtempSync(path.join(guardRoot(), 'tmp', 'extract-'))
-    try {
-      execFileSync('unzip', ['-q', '-o', zip, '-d', temporary], { stdio: 'ignore' })
-      const inner = path.join(temporary, 'workspace')
-      if (!fs.existsSync(inner)) throw new Error('task asset has no workspace/ root')
-      fs.cpSync(inner, destination, { recursive: true })
-    } finally {
-      fs.rmSync(temporary, { recursive: true, force: true })
+      source: this.materialZip(),
+      prompt: this.guard.promptFor(workspace?.path ?? '', this.materialZip()),
     }
   }
 
