@@ -16,9 +16,17 @@ export const EVENTS_ROUTE = '/api/eval-guard/events'
 export const REVEAL_ROUTE = '/api/eval-guard/reveal'
 export const MANUAL_ROUTE = '/api/eval-guard/manual'
 
-/** The only task implemented today. */
+/** Supported task ids. */
 export const TANK_TASK = 'tank'
 export const TANK_TASK_LABEL = '第 6 集 · 坦克大战'
+export const WAREHOUSE_TASK = 'warehouse'
+export const WAREHOUSE_TASK_LABEL = '第 5 集 · 仓储调度'
+export const LAND_TASK = 'land'
+export const LAND_TASK_LABEL = '第 1 集 · 圈地'
+export const BOMBERMAN_TASK = 'bomberman'
+export const BOMBERMAN_TASK_LABEL = '第 2 集 · 炸弹人'
+export const CTF_TASK = 'ctf'
+export const CTF_TASK_LABEL = '第 3 集 · 夺旗'
 
 /** One task offered by the installer. */
 export interface TaskInfo {

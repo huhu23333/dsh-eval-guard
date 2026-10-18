@@ -6,7 +6,7 @@ import { wrapSandbox } from '../src/sandbox.ts'
 const root = fs.mkdtempSync(path.join(import.meta.dirname, '..', '.wrap-test-'))
 fs.writeFileSync(path.join(root, 'inside.txt'), 'ok\n')
 try {
-  const wrap = wrapSandbox(['/bin/sh', '-c', 'cat inside.txt; ls /usr/bin/g++ >/dev/null && echo usr-ok; echo x > /tmp/t && echo tmp-ok; cat ' + path.join(os.homedir(), '.bashrc') + ' 2>&1 || true'], root, root, [], path.join(root, 'audit.jsonl'))
+  const wrap = wrapSandbox(['/bin/sh', '-c', 'ls -la >/dev/null && echo ls-ok; cat inside.txt; python3 -c "import platform; print(platform.system())"; mkdir -p sub/dir && echo mkdir-ok; ls /usr/bin/g++ >/dev/null && echo usr-ok; echo x > /tmp/t && echo tmp-ok; cat ' + path.join(os.homedir(), '.bashrc') + ' 2>&1 || true'], root, root, [], path.join(root, 'audit.jsonl'))
   const result = spawnSync(wrap.argv[0] as string, wrap.argv.slice(1), { cwd: root, encoding: 'utf8', timeout: 30000 })
   console.log('status', result.status, 'signal', result.signal)
   console.log('stdout', (result.stdout || '').slice(0, 500))

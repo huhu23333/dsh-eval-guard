@@ -6,21 +6,26 @@
 - 禁止联网、子代理、Agent Team/跨 agent 通信、读取其它工作区。
 - 工具黑名单可配置；未知工具默认放行，但 DSH 内置与 dsh-ops 的工具会做参数路径审计。
 - 每个用户消息后的单轮有可配置的最长时长（默认 90 分钟）；到点只终止当前轮次，并递归清理子代理与后台任务。
-- 设置页可安装“第 6 集 · 坦克大战”任务：空工作区 → 放入打包好的 `workspace.zip` → 新会话填入提示词（由用户发送）。
+- 设置页可安装五个任务包：**第 6 集 · 坦克大战**、**第 5 集 · 仓储调度**、**第 1 集 · 圈地**、**第 2 集 · 炸弹人**、**第 3 集 · 夺旗**：空工作区 → 放入打包好的 `workspace.zip` → 新会话填入提示词（由用户发送）。
 
 插件默认关闭；关闭时不做任何行为。所有 run 记录、usage、violations 写入
-$DSH_HOME/eval-guard/runs/<run-id>/，供独立的 ../tank-eval 评测程序读取。
+$DSH_HOME/eval-guard/runs/<run-id>/，供独立的 ../tank-eval 与 ../warehouse-eval 评测程序读取。
 
 ## 任务来源
 
-安装的评测任务来自开源项目 **meow-ai-arena** 的第 6 集 · 坦克大战：
+安装的评测任务来自开源项目 **meow-ai-arena**（MIT License，commit `6bd738b`，2026-10-16）：
 
-- 仓库：<https://github.com/chen-006/meow-ai-arena>
-- 任务目录：<https://github.com/chen-006/meow-ai-arena/tree/main/tank>
-- 使用版本：commit `6bd738b`（2026-10-16）
-- 素材来源：该仓库的 `tank/workspace/`（MIT License）
+- 第 1 集 · 圈地：<https://github.com/chen-006/meow-ai-arena/tree/main/land>，素材 `land/workspace/`
+- 第 2 集 · 炸弹人：<https://github.com/chen-006/meow-ai-arena/tree/main/bomberman>，素材 `bomberman/workspace/`
+- 第 3 集 · 夺旗：<https://github.com/chen-006/meow-ai-arena/tree/main/ctf>，素材 `ctf/workspace/`
+- 第 5 集 · 仓储调度：<https://github.com/chen-006/meow-ai-arena/tree/main/warehouse>，素材 `warehouse/workspace/` 的第 1 轮主程包，改编为单人单次 90 分钟
+- 第 6 集 · 坦克大战：<https://github.com/chen-006/meow-ai-arena/tree/main/tank>，素材 `tank/workspace/`
+
+仓库：<https://github.com/chen-006/meow-ai-arena>
 
 本插件打包的 Linux 版 `workspace.zip` 在原素材基础上做了三处适配：把 `baseline.cpp` 编译为 Linux ELF 可执行文件并移出源码，文件名改为 `baseline`（不带 `.exe`）；把 `clock.py` 改为单次 90 分钟版本；`README.md` 中对应的 baseline 示例同步改名。规则、引擎、本地裁判、模板等其余文件保持原样。安装任务时只把 `workspace.zip` 放入工作区，不再散装解压。
+
+仓储调度任务包同样只放 `workspace.zip`；包内 `TASK.md` 已改写成单人单次 90 分钟版本，保留了原 `baseline/`、`src/`、`workloads/` 和 `tools/`。
 
 ## 构建
 

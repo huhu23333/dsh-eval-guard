@@ -66,7 +66,7 @@ function ensureDir(dir: string): void {
 
 /** Host-side system directories mounted read-only into the sandbox. */
 const SYSTEM_READ_DIRS: readonly string[] = [
-  '/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/etc', '/opt', '/sys',
+  '/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/etc', '/opt', '/sys', '/var/lib',
 ]
 
 /** Ancestors of a path, outermost first. */
@@ -182,7 +182,10 @@ function writePolicy(workspace: string, rules: readonly PathRule[]): string {
   lines.push(line('workspace', workspace))
   for (const system of SYSTEM_READ_DIRS) {
     try {
-      if (fs.statSync(system).isDirectory()) lines.push(line('read', system))
+      if (fs.statSync(system).isDirectory()) {
+        lines.push(line('read', system))
+        for (const ancestor of ancestorsOf(system)) lines.push(line('exact', ancestor))
+      }
     } catch {
       // absent on this host
     }
@@ -208,7 +211,7 @@ function writePolicy(workspace: string, rules: readonly PathRule[]): string {
     }
   }
   for (const manifest of manifests) lines.push(line('read', manifest))
-  for (const dev of ['/dev/null', '/dev/zero', '/dev/full', '/dev/random', '/dev/urandom', '/dev/tty', '/dev/pts']) {
+  for (const dev of ['/dev', '/dev/null', '/dev/zero', '/dev/full', '/dev/random', '/dev/urandom', '/dev/tty', '/dev/pts']) {
     lines.push(line('dev', dev))
   }
   // Runtime files the PTC child must read. The supervisor binary itself is

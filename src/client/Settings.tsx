@@ -72,6 +72,7 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const [workspaceId, setWorkspaceId] = useState('')
+  const [taskId, setTaskId] = useState('')
   const [check, setCheck] = useState<CheckResult | null>(null)
   const [manual, setManual] = useState<ManualPaths | null>(null)
   const [prompt, setPrompt] = useState('')
@@ -98,6 +99,10 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
     }, 2000)
     return () => clearInterval(timer)
   }, [])
+
+  useEffect(() => {
+    if (taskId === '' && state !== null && state.tasks.length > 0) setTaskId(state.tasks[0]!.id)
+  }, [state, taskId])
 
   const ready = snapshot.status === 'ready' && snapshot.writable
   const save = async (patch: Partial<Draft>): Promise<void> => {
@@ -135,12 +140,12 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
     void save({ enabled: true })
   }
 
-  const loadManual = (id: string): void => {
+  const loadManual = (id: string, task: string): void => {
     if (id === '') { setCheck(null); setManual(null); setPrompt(''); return }
     fetch(CHECK_ROUTE + '?workspaceId=' + encodeURIComponent(id)).then(readJson<CheckResult>).then(result => {
       setCheck(result)
       if (result.ok) {
-        fetch(MANUAL_ROUTE + '?workspaceId=' + encodeURIComponent(id)).then(readJson<ManualPaths>).then(paths => {
+        fetch(MANUAL_ROUTE + '?workspaceId=' + encodeURIComponent(id) + '&task=' + encodeURIComponent(task)).then(readJson<ManualPaths>).then(paths => {
           setManual(paths)
           setPrompt(paths.prompt)
         }).catch(() => undefined)
@@ -149,7 +154,7 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
   }
 
   const install = async (): Promise<void> => {
-    if (workspaceId === '') return
+    if (workspaceId === '' || taskId === '') return
     setError(''); setNotice('')
     const checked = await fetch(CHECK_ROUTE + '?workspaceId=' + encodeURIComponent(workspaceId)).then(readJson<CheckResult>)
     setCheck(checked)
@@ -159,7 +164,7 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
     }
     const result = await fetch(INSTALL_ROUTE, {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ workspaceId }),
+      body: JSON.stringify({ workspaceId, task: taskId }),
     }).then(readJson<InstallResult>)
     if (!result.ok || result.prompt === undefined) { setError(result.error ?? '安装失败'); return }
     setPrompt(result.prompt)
@@ -237,15 +242,24 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
       <strong>{t('settings.task')}</strong>
       <p style={note}>{t('settings.taskHint')}</p>
       <div style={row}>
-        <span>{t('settings.taskLabel')}: 第 6 集 · 坦克大战</span>
+        <span>{t('settings.taskLabel')}:</span>
+        <select value={taskId} disabled={state === null || state.tasks.length === 0}
+          onChange={event => {
+            const next = event.target.value
+            setTaskId(next); setCheck(null); setManual(null); setPrompt('')
+            if (workspaceId !== '') loadManual(workspaceId, next)
+          }}>
+          {(state?.tasks ?? []).map(task => <option key={task.id} value={task.id}>{task.label}</option>)}
+        </select>
       </div>
+      {state !== null && <p style={note}>{state.tasks.find(task => task.id === taskId)?.description ?? ''}</p>}
       <div style={row}>
         <span>{t('settings.workspace')}:</span>
-        <select value={workspaceId} onChange={event => { setWorkspaceId(event.target.value); loadManual(event.target.value) }}>
+        <select value={workspaceId} onChange={event => { setWorkspaceId(event.target.value); loadManual(event.target.value, taskId) }}>
           <option value="">{t('settings.pickWorkspace')}</option>
           {workspaces.map(workspace => <option key={workspace.id} value={workspace.id}>{workspace.label}</option>)}
         </select>
-        <button style={primary} disabled={workspaceId === ''} onClick={() => void install()}>{t('settings.check')}</button>
+        <button style={primary} disabled={workspaceId === '' || taskId === ''} onClick={() => void install()}>{t('settings.check')}</button>
       </div>
       {workspaces.length === 0 && <p style={note}>{t('settings.noWorkspaces')}</p>}
       {check !== null && !check.empty && <p style={{ ...note, color: '#d99' }}>{t('settings.nonEmpty')} ({check.entries.slice(0, 6).join(', ')})</p>}

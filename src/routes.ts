@@ -9,10 +9,10 @@ import { spawn } from 'node:child_process'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   CHECK_ROUTE, EVENTS_ROUTE, INSTALL_ROUTE, MANUAL_ROUTE, PROMPT_ROUTE, REVEAL_ROUTE,
-  STATE_ROUTE, type CheckResult, type GuardState, type ManualPaths,
+  STATE_ROUTE, TANK_TASK, type CheckResult, type GuardState, type ManualPaths,
 } from './shared.ts'
 import type { Guard } from './guard.ts'
-import type { TaskService } from './task.ts'
+import { TASKS, type TaskService } from './task.ts'
 import { dshHome, guardRoot } from './sandbox.ts'
 
 /** Minimal Workspace shape read from the registry. */
@@ -69,7 +69,7 @@ export function registerRoutes(ctx: Context, guard: Guard, tasks: TaskService): 
         const state: GuardState = {
           enabled: guard.active,
           running: guard.runningSessions(),
-          tasks: [{ id: 'tank', label: '第 6 集 · 坦克大战', description: '1v1 坦克大战 bot；提交 submission/bot.cpp。' }],
+          tasks: [...TASKS],
           defaultBlacklist: guard.defaultBlacklist(),
           generatedDefault: guard.configuration.toolBlacklistUseDefault,
           workspaceRoot: dshHome(),
@@ -92,22 +92,27 @@ export function registerRoutes(ctx: Context, guard: Guard, tasks: TaskService): 
         let body: { workspaceId?: unknown; task?: unknown } = {}
         try { body = await request.json() as typeof body } catch { return json({ error: 'invalid body' }, 400) }
         const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : ''
+        const taskId = typeof body.task === 'string' && body.task !== '' ? body.task : TANK_TASK
         if (workspaceId === '') return json({ error: 'workspaceId is required' }, 400)
-        return json(tasks.install(workspaceId))
+        return json(tasks.install(workspaceId, taskId))
       },
     })
     add({
       path: PROMPT_ROUTE, methods: ['GET'], requestBody: 'buffered',
       fetch: async (request: Request): Promise<Response> => {
         const workspaceId = query(request, 'workspaceId')
-        return json({ prompt: tasks.prompt(workspaceId) })
+        const taskId = query(request, 'task') || TANK_TASK
+        if (tasks.definition(taskId) === undefined) return json({ error: 'unknown task' }, 400)
+        return json({ prompt: tasks.prompt(workspaceId, taskId) })
       },
     })
     add({
       path: MANUAL_ROUTE, methods: ['GET'], requestBody: 'buffered',
       fetch: async (request: Request): Promise<Response> => {
         const workspaceId = query(request, 'workspaceId')
-        const paths: ManualPaths = tasks.manualPaths(workspaceId)
+        const taskId = query(request, 'task') || TANK_TASK
+        if (tasks.definition(taskId) === undefined) return json({ error: 'unknown task' }, 400)
+        const paths: ManualPaths = tasks.manualPaths(workspaceId, taskId)
         return json(paths)
       },
     })

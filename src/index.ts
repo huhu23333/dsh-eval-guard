@@ -58,6 +58,6 @@ export function apply(ctx: Context, config: Partial<import('./config.ts').Config
     child.effect(() => () => { guard.dispose() }, 'eval-guard: dispose')
     // Reconcile immediately: a profile may load with the switch already on.
     guard.update(config ?? {})
-    ctx.logger.info('eval-guard: task %s ready (%d task definition(s))', TANK_DEFINITION.id, TASKS.length)
+    ctx.logger.info('eval-guard: task %s ready (%d task definition(s))', TASKS.map(task => task.id).join(','), TASKS.length)
   })
 }

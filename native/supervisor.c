@@ -271,6 +271,13 @@ static int is_dev_path(const char *path) {
   return 0;
 }
 
+static int is_exact_policy_path(const char *path) {
+  for (int i = 0; i < g_exact_count; i++) {
+    if (strcmp(path, g_exact[i]) == 0) return 1;
+  }
+  return 0;
+}
+
 static int base_read_allowed(const char *path) {
   if (g_workspace[0] != '\0' && starts_with_seg(path, g_workspace)) return 1;
   if (is_dev_path(path)) return 1;
@@ -509,14 +516,18 @@ static int check_notification(pid_t pid, const struct seccomp_notif *req, int *w
     int domain = (int)a0;
     *write_access = 0;
     snprintf(path_out, MAX_PATH, "<network:socket>");
-    if (is_bwrap(pid) && (domain == AF_UNIX || domain == AF_NETLINK)) return 1;
+    /* AF_UNIX/AF_NETLINK stay inside the private network namespace and are
+     * needed by NSS, Python and the dynamic loader. AF_INET/AF_INET6 and raw
+     * sockets are still blocked. */
+    if (domain == AF_UNIX || domain == AF_NETLINK) return 1;
     return 0;
   }
   if (is_network_syscall(nr)) {
     *write_access = 0;
     snprintf(path_out, MAX_PATH, "<network:%s>", syscall_name(nr));
-    if (is_bwrap(pid)) return 1;
-    return 0;
+    /* Only AF_UNIX/AF_NETLINK sockets can exist now; their traffic is local
+     * to the private namespace and cannot reach the host network. */
+    return 1;
   }
   if (nr == SYS_io_uring_setup || nr == SYS_ptrace || nr == SYS_open_by_handle_at) {
     *write_access = 0;
@@ -630,6 +641,10 @@ static int check_notification(pid_t pid, const struct seccomp_notif *req, int *w
   }
   snprintf(path_out, MAX_PATH, "%s", path);
   *write_access = write;
+  /* `mkdir -p` walks every existing ancestor and calls mkdir on each one.
+   * Creating an already-existing workspace ancestor is a kernel no-op, not an
+   * out-of-workspace write. */
+  if (write && existed && (nr == SYS_mkdir || nr == SYS_mkdirat) && is_exact_policy_path(path)) return 1;
   /* bwrap writes the user-namespace uid/gid maps under /proc before it execs
    * the target. Nothing the target runs may write under /proc. */
   if (write && g_current_pid > 0 && is_bwrap(g_current_pid) && starts_with_seg(path, "/proc")) return 1;

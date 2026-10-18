@@ -675,10 +675,10 @@ export class Guard {
   }
 
   /** Build the prompt for one task with only installed tools listed. */
-  promptFor(workspacePath: string, source: string): string {
+  promptFor(workspacePath: string, source: string, task: TaskDefinition = this.task): string {
     const present = new Set(this.toolCache)
     const blacklist = parseBlacklist(this.blacklistText()).filter(name => isBaseBlacklistName(name) || present.has(name))
-    return this.task.prompt(blacklist, { source, workspacePath, minutes: this.configuration.timeLimitMinutes })
+    return task.prompt(blacklist, { source, workspacePath, minutes: this.configuration.timeLimitMinutes })
   }
 
   /** The task definition. */
