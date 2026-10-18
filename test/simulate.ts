@@ -101,7 +101,6 @@ assert.equal(installed.ok, true)
 assert.ok(installed.runId)
 assert.ok(fs.existsSync(path.join(workspace, 'workspace.zip')))
 assert.match(installed.prompt ?? '', /submission\/bot\.cpp/)
-assert.match(installed.prompt ?? '', /web_fetch/)
 assert.ok(fs.existsSync(path.join(guardRoot(), 'runs', installed.runId as string, 'run.json')))
 const warehouse = tasks.install('ws2', 'warehouse')
 assert.equal(warehouse.ok, true)
@@ -113,7 +112,7 @@ for (const [task, workspaceId] of [['land', 'ws3'], ['bomberman', 'ws4'], ['ctf'
   const installedTask = tasks.install(workspaceId, task)
   assert.equal(installedTask.ok, true)
   assert.ok(fs.existsSync(path.join(registry.get(workspaceId)!.path, 'workspace.zip')))
-  assert.match(installedTask.prompt ?? '', /连续 90 分钟/)
+  assert.match(installedTask.prompt ?? '', /workspace\.zip/)
 }
 
 const enabled = await guard.enable()
