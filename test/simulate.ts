@@ -106,8 +106,8 @@ assert.ok(fs.existsSync(path.join(guardRoot(), 'runs', installed.runId as string
 const warehouse = tasks.install('ws2', 'warehouse')
 assert.equal(warehouse.ok, true)
 assert.ok(fs.existsSync(path.join(workspace2, 'workspace.zip')))
-assert.match(warehouse.prompt ?? '', /仓储调度优化/)
-assert.match(warehouse.prompt ?? '', /workspace\/src\//)
+assert.match(warehouse.prompt ?? '', /仓储机器人调度/)
+assert.match(warehouse.prompt ?? '', /src\//)
 assert.ok(fs.existsSync(path.join(guardRoot(), 'runs', warehouse.runId as string, 'run.json')))
 for (const [task, workspaceId] of [['land', 'ws3'], ['bomberman', 'ws4'], ['ctf', 'ws5']] as const) {
   const installedTask = tasks.install(workspaceId, task)

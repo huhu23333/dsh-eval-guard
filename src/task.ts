@@ -1,6 +1,6 @@
 /**
- * The tank task pack: packaged workspace.zip install, prompt construction, and the one
- * run record the evaluator later reads.
+ * Task packs: packaged workspace.zip install, original prompt construction, and
+ * the run record the evaluators later read.
  * @module dsh-eval-guard/task
  */
 import fs from 'node:fs'
@@ -14,42 +14,18 @@ import type { Guard, TaskDefinition } from './guard.ts'
 import { guardRoot, packageRoot } from './sandbox.ts'
 
 /** Tasks offered by the installer. */
-export const TASKS: readonly TaskInfo[] = [{
-  id: TANK_TASK,
-  label: TANK_TASK_LABEL,
-  description: '1v1 坦克大战 bot：解压 workspace.zip 后编写 workspace/submission/bot.cpp，评测时与基准及其它提交打循环赛。',
-}, {
-  id: WAREHOUSE_TASK,
-  label: WAREHOUSE_TASK_LABEL,
-  description: '单人单次仓储调度优化：解压 workspace.zip 后改写 workspace/src/，在输出逐字节不变的前提下尽量提速。',
-}, {
-  id: LAND_TASK,
-  label: LAND_TASK_LABEL,
-  description: '圈地 1v1/4 人混战 bot：解压 workspace.zip 后编写 workspace/submission/bot.cpp。',
-}, {
-  id: BOMBERMAN_TASK,
-  label: BOMBERMAN_TASK_LABEL,
-  description: '炸弹人 2–10 人 bot：解压 workspace.zip 后编写 workspace/submission/bot.cpp。',
-}, {
-  id: CTF_TASK,
-  label: CTF_TASK_LABEL,
-  description: '夺旗 2–15 人 bot：解压 workspace.zip 后编写 workspace/submission/bot.cpp。',
-}]
-
-/** Format a blacklist for the prompt. */
-function blacklistBlock(blacklist: readonly string[]): string {
-  if (blacklist.length === 0) return '（当前没有需要特别列出的工具。）'
-  return blacklist.join('\n')
-}
-
-/** Wording shared by every task: difficulty, strong-agent comparison, no early submit. */
-const COMPETITION_LINES = [
-  '## 竞争强度',
-  '',
-  '- 这个任务并不像看起来那么简单，不要低估隐藏边界、正确性细节和对手强度。',
-  '- 你的结果会与 meow-ai-arena 中其他强 agent（如 GPT-6 Astra、Opus、Kimi K3 等）的提交在同一口径下比较，而不只是和基准 bot 比较；请按能进入前列的标准要求自己。',
-  '- 不要过早交卷：在时间上限内尽量多验证、迭代和完善，只有确实完成时才结束。',
+export const TASKS: readonly TaskInfo[] = [
+  { id: TANK_TASK, label: TANK_TASK_LABEL, description: '1v1 坦克大战 bot；解压 workspace.zip，提交 workspace/submission/bot.cpp。' },
+  { id: WAREHOUSE_TASK, label: WAREHOUSE_TASK_LABEL, description: '单人单次仓储调度优化；解压 workspace.zip，提交 workspace/src/。' },
+  { id: LAND_TASK, label: LAND_TASK_LABEL, description: '圈地 1v1/4 人混战 bot；解压 workspace.zip，提交 workspace/submission/bot.cpp。' },
+  { id: BOMBERMAN_TASK, label: BOMBERMAN_TASK_LABEL, description: '炸弹人 2–10 人 bot；解压 workspace.zip，提交 workspace/submission/bot.cpp。' },
+  { id: CTF_TASK, label: CTF_TASK_LABEL, description: '夺旗 2–15 人 bot；解压 workspace.zip，提交 workspace/submission/bot.cpp。' },
 ]
+
+/** Common workspace/clock sentence, keeping the original prompt's wording. */
+function clockLine(minutes: number): string {
+  return '本次是连续 ' + String(minutes) + ' 分钟的单次任务，请充分利用时间持续改进，不要提前交卷。'
+}
 
 /** The tank task definition. */
 export const TANK_DEFINITION: TaskDefinition = {
@@ -58,39 +34,25 @@ export const TANK_DEFINITION: TaskDefinition = {
   description: TASKS[0]!.description,
   asset: path.join(packageRoot(), 'assets', 'tank', 'workspace.zip'),
   prompt(blacklist, options) {
+    const minutes = options.minutes ?? 90
     return [
-      '这是一场用于评测 AI agent 能力的坦克大战编程任务。你需要在当前工作区里独立完成它。',
+      '按照要求编写尽可能强的坦克大战 bot。你的对手是其他顶尖 AI 模型写的 bot，它们可能主动设计战术。基准是一个中等强度、思路常规的 bot，它在正式比赛中是 0 分线；战胜基准不代表足够强，正式对手远强于基准。正式赛是 1 对 1 循环赛，用 Bradley-Terry 模型拟合实力值。',
       '',
-      '## 环境与限制',
+      '解压 workspace.zip，阅读 README.md 和 RULES.md，然后开始。本次是连续 ' + String(minutes) + ' 分钟的单次任务，从对话开始时计时。',
       '',
-      '- 你只能读写当前工作区内的文件；工作区以外的任何位置都不能访问，包括 /tmp。',
-      '- 禁止联网、禁止调用其他 AI 或子代理、禁止与其他 agent 通信或读取其他工作区。',
-      '- 评测守护会阻止并记录违规行为；违规可能导致本次评测无效。',
-      '- 任务必须自主完成：不要向用户提问、不要请求审批、不要等待任何用户输入。',
+      '要点：',
+      '- 时间规则：连续 ' + String(minutes) + ' 分钟；clock.py 从解压那一刻开始计算，实际计时从对话开始计算，它只能作为参考，请尽快解压以减小误差；到点会被强制终止；',
+      '- 到点时 workspace/submission/bot.cpp 是什么就交什么：不要让它长时间停在编译不过的状态；',
+      '- 允许使用本地工具、对战和复盘；禁止联网，禁止求助其他模型（包括启动子代理：subagent、Task / Agent 工具、后台并行代理之类），除主办方发给你的材料外禁止查看其他选手的资料；',
+      '- 这台机器上同时运行着其他程序：只能结束你自己启动的进程（按进程号），不要按名字批量结束进程；',
+      '- 只能读写当前工作区内的文件，包括 /tmp 在内的其他位置都不能访问；',
+      '- 不要向我提问，也不要等待我确认。',
       '',
-      '## 交付',
-      '',
-      '- 解压工作区里的 workspace.zip，把最终 bot 保存到解压后的 workspace/submission/bot.cpp（只需要这一个文件）。',
-      '- 最后用几句话说明你的策略。',
-      '',
-      '## 时间规则',
-      '',
-      '- 本次是**连续 ' + String(options.minutes ?? 90) + ' 分钟的单次任务**，从对话开始时开始计时。',
-      '- 交付前检查并关闭所有后台任务；到点会被强制终止。',
-      '- clock.py 从解压那一刻开始计算，而实际计时从对话开始计算；它**只能作为参考**，请尽快解压以减小误差。实际时间以评测守护为准。',
+      '完成后，用几句话简述你的策略。',
       '',
       '## 本次评测禁止调用的工具',
       '',
-      blacklistBlock(blacklist),
-      '',
-      '## 工作区内容',
-      '',
-      '工作区里有一个 workspace.zip；解压后进入 workspace/ 目录，先读 README.md 和 RULES.md，规则引擎是 tank.hpp。',
-      '本地工具（arena.py、check、play、batch、vs 等）和起步模板都在解压后的 workspace/ 里，可直接使用。',
-      '',
-      ...COMPETITION_LINES,
-      '',
-      '开始吧。',
+      blacklist.length === 0 ? '（无）' : blacklist.join('\n'),
     ].join('\n')
   },
 }
@@ -102,149 +64,81 @@ export const WAREHOUSE_DEFINITION: TaskDefinition = {
   description: TASKS[1]!.description,
   asset: path.join(packageRoot(), 'assets', 'warehouse', 'workspace.zip'),
   prompt(blacklist, options) {
+    const minutes = options.minutes ?? 90
     return [
-      '这是一场用于评测 AI agent 能力的仓储调度优化任务。你需要在当前工作区里独立完成它。',
+      '这是一场 AI 编程赛。你接手了一个代码混乱的老系统：src/ 里是一个仓储机器人调度仿真系统，功能正确，但运行很慢。你的任务是在输出与基线逐字节相同的前提下，让 src/ 尽可能快。',
       '',
-      '## 环境与限制',
+      '当前目录里有 workspace.zip。请先自行解压，进入 workspace 文件夹，阅读 TASK.md，然后完全按照 TASK.md 的要求独立完成任务。',
       '',
-      '- 你只能读写当前工作区内的文件；工作区以外的任何位置都不能访问，包括 /tmp。',
-      '- 禁止联网、禁止调用其他 AI 或子代理、禁止与其他 agent 通信或读取其他工作区。',
-      '- 评测守护会阻止并记录违规行为；违规可能导致本次评测无效。',
-      '- 任务必须自主完成：不要向用户提问、不要请求审批、不要等待任何用户输入。',
+      '要点（详见 TASK.md）：',
+      '- 只能修改 src/；编译命令固定为 g++ -O2 -std=c++20 src/*.cpp，只用 C++ 标准库；',
+      '- 对任何合法输入（以 tools/check_input.py --full 为准），输出都必须与基线逐字节相同；SPEC.md 是过时的旧文档，一切以基线代码的实际行为为准；',
+      '- 本次是连续 ' + String(minutes) + ' 分钟的单次任务；clock.py 从解压那一刻开始计算，实际计时从对话开始计算，它只能作为参考，请尽快解压；',
+      '- 你的结果会与其他强 agent 在同一口径下比较，而不只是和基准比较；不要提前交卷，充分利用时间继续优化和验证；',
+      '- 只能读写当前文件夹里的文件；可以使用本环境的所有工具，但不能联网搜索；',
+      '- 不要向我提问，也不要等待我确认，直到完成为止。',
       '',
-      '## 交付',
-      '',
-      '- 解压工作区里的 workspace.zip，进入解压后的 workspace/ 目录；只能修改 workspace/src/ 下的文件。',
-      '- 结束时 workspace/src/ 整个目录就是提交；不要修改 baseline/、workloads/、tools/。',
-      '- 最后用几句话说明你做了什么优化、如何验证输出不变。',
-      '',
-      '## 时间规则',
-      '',
-      '- 本次是**连续 ' + String(options.minutes ?? 90) + ' 分钟的单次任务**，从对话开始时开始计时。',
-      '- 交付前检查并关闭所有后台任务；到点会被强制终止，以当时的 src/ 为准。',
-      '- clock.py 从解压那一刻开始计算，而实际计时从对话开始计算；它**只能作为参考**，请尽快解压以减小误差。实际时间以评测守护为准。',
+      '完成后请告诉我：src 文件夹的完整路径，并用几句话总结你做了什么。',
       '',
       '## 本次评测禁止调用的工具',
       '',
-      blacklistBlock(blacklist),
-      '',
-      '## 工作区内容',
-      '',
-      '解压后 workspace/ 里有 TASK.md、SPEC.md、baseline/、src/、workloads/public/ 和 tools/。',
-      '先读 TASK.md、baseline 代码和 SPEC.md；SPEC.md 是旧文档，与基线代码不一致时以基线代码的行为为准。',
-      '编译命令固定为 g++ -O2 -std=c++20 src/*.cpp；输出必须与 baseline 逐字节相同，包括所有能通过 tools/check_input.py --full 的输入。',
-      '用 python3 tools/bench.py 检查正确性和耗时，用 tools/gen.py 生成更多输入和基线对拍。',
-      '',
-      ...COMPETITION_LINES,
-      '',
-      '开始吧。',
+      blacklist.length === 0 ? '（无）' : blacklist.join('\n'),
     ].join('\n')
   },
 }
 
-/** Shared prompt for the three bot-writing tasks. */
-function botTaskPrompt(
-  intro: string,
-  submit: string,
-  workspaceLines: readonly string[],
-  blacklist: readonly string[],
-  options: { source: string; workspacePath: string; minutes: number },
-): string {
-  return [
-    intro,
-    '',
-    '## 环境与限制',
-    '',
-    '- 你只能读写当前工作区内的文件；工作区以外的任何位置都不能访问，包括 /tmp。',
-    '- 禁止联网、禁止调用其他 AI 或子代理、禁止与其他 agent 通信或读取其他工作区。',
-    '- 评测守护会阻止并记录违规行为；违规可能导致本次评测无效。',
-    '- 任务必须自主完成：不要向用户提问、不要请求审批、不要等待任何用户输入。',
-    '',
-    '## 交付',
-    '',
-    submit,
-    '- 最后用几句话说明你的策略。',
-    '',
-    '## 时间规则',
-    '',
-    '- 本次是**连续 ' + String(options.minutes ?? 90) + ' 分钟的单次任务**，从对话开始时开始计时。',
-    '- 交付前检查并关闭所有后台任务；到点会被强制终止。',
-    '- clock.py 从解压那一刻开始计算，而实际计时从对话开始计算；它**只能作为参考**，请尽快解压以减小误差。实际时间以评测守护为准。',
-    '',
-    '## 本次评测禁止调用的工具',
-    '',
-    blacklistBlock(blacklist),
-    '',
-    '## 工作区内容',
-    '',
-    ...workspaceLines,
-    '',
-    ...COMPETITION_LINES,
-    '',
-    '开始吧。',
-  ].join('\n')
-}
-
-/** Land (territory) bot task. */
+/** Land bot task, adapted from the original participant prompt. */
 export const LAND_DEFINITION: TaskDefinition = {
   id: LAND_TASK,
   label: LAND_TASK_LABEL,
   description: TASKS[2]!.description,
   asset: path.join(packageRoot(), 'assets', 'land', 'workspace.zip'),
   prompt(blacklist, options) {
-    return botTaskPrompt(
-      '这是一场用于评测 AI agent 能力的圈地对战 bot 编程任务。你需要在当前工作区里独立完成它。',
-      '- 解压工作区里的 workspace.zip，进入 workspace/；从 starter/bot.cpp 起步，最终把单文件程序保存到 workspace/submission/bot.cpp。',
-      [
-        '解压后 workspace/ 里有 RULES.md、TASK.md、engine/、anchors/、starter/ 和 submission/。',
-        '先读 RULES.md、TASK.md、engine/game.py 和 starter/bot.cpp；规则以 engine/game.py 为准。',
-        '本地裁判：python3 engine/referee.py submission/bot.cpp anchors/greedy.cpp --games 10（单挑），也可加多个 bot 打混战。',
-        '只能提交一个 bot.cpp，编译参数固定为 g++ -O2 -std=c++20，单文件、只用 C++ 标准库。',
-      ],
-      blacklist, options,
-    )
+    return [
+      '这是一场正式的 AI 编程对抗赛，你的对手是其他顶尖 AI 模型写的 bot，它们会主动切断你、抢你的地。比赛结果会公开排名，请拿出你的最高水平。',
+      '',
+      '请解压当前目录的 workspace.zip，进入 workspace 文件夹，按 TASK.md 的要求编写一个尽可能强的圈地对战 bot，保存为 workspace/submission/bot.cpp。' + clockLine(options.minutes ?? 90) + '只能读写当前文件夹里的文件，不能联网搜索，不要向我提问。',
+      '',
+      '## 本次评测禁止调用的工具',
+      '',
+      blacklist.length === 0 ? '（无）' : blacklist.join('\n'),
+    ].join('\n')
   },
 }
 
-/** Bomberman bot task. */
+/** Bomberman bot task, adapted from the original participant prompt. */
 export const BOMBERMAN_DEFINITION: TaskDefinition = {
   id: BOMBERMAN_TASK,
   label: BOMBERMAN_TASK_LABEL,
   description: TASKS[3]!.description,
   asset: path.join(packageRoot(), 'assets', 'bomberman', 'workspace.zip'),
   prompt(blacklist, options) {
-    return botTaskPrompt(
-      '这是一场用于评测 AI agent 能力的炸弹人对战 bot 编程任务。你需要在当前工作区里独立完成它。',
-      '- 解压工作区里的 workspace.zip，进入 workspace/；最终把单文件程序保存到 workspace/submission/bot.cpp。',
-      [
-        '解压后 workspace/ 里有 README.md、RULES.md、engine/、baseline.cpp 和 submission/。',
-        '先读 README.md、RULES.md 和 engine/engine.py；baseline.cpp 是公开练习对手，可以编译、对战和复盘。',
-        '同一程序要支持 2–10 人；编译参数固定为 g++ -O2 -std=c++20，单文件、只用 C++ 标准库。',
-        '用 engine/arena.py 或 README 里的本地命令做对战和回放验证。',
-      ],
-      blacklist, options,
-    )
+    return [
+      '按照要求编写尽可能强bot，你的对手是全球其他顶尖ai，可能主动设计战术。基准只是很弱的bot，它在正式比赛为0分线。正式赛会对战多轮，用Bradley-Terry模型拟合实力值。',
+      '解压 workspace.zip，阅读 README.md 和 RULES.md，编写支持2–10人的炸弹人 bot。' + clockLine(options.minutes ?? 90) + '允许本地工具、对战和复盘，禁止联网、调用其他AI或查看其他选手资料。提交 submission/bot.cpp，简述策略。',
+      '',
+      '## 本次评测禁止调用的工具',
+      '',
+      blacklist.length === 0 ? '（无）' : blacklist.join('\n'),
+    ].join('\n')
   },
 }
 
-/** CTF (capture the flag) bot task. */
+/** CTF bot task, adapted from the original participant prompt. */
 export const CTF_DEFINITION: TaskDefinition = {
   id: CTF_TASK,
   label: CTF_TASK_LABEL,
   description: TASKS[4]!.description,
   asset: path.join(packageRoot(), 'assets', 'ctf', 'workspace.zip'),
   prompt(blacklist, options) {
-    return botTaskPrompt(
-      '这是一场用于评测 AI agent 能力的夺旗对战 bot 编程任务。你需要在当前工作区里独立完成它。',
-      '- 解压工作区里的 workspace.zip，进入 workspace/；最终把单文件程序保存到 workspace/submission/bot.cpp。',
-      [
-        '解压后 workspace/ 里有 README.md、RULES.md、arena.py、engine.py、core.py、baseline.cpp 和 submission/bot.cpp 模板。',
-        '先读 README.md、RULES.md 和 submission/bot.cpp；一个程序统一控制己方 3 个角色，支持 2–15 个阵营。',
-        '本地对战：python3 arena.py play submission/bot.cpp baseline --seed 7，或 arena.py batch；baseline.cpp 是公开练习对手。',
-        '编译参数固定为 g++ -O2 -std=c++20，单文件、只用 C++ 标准库。',
-      ],
-      blacklist, options,
-    )
+    return [
+      '按照要求编写尽可能强的 bot，你的对手是全球其他顶尖 AI，可能主动设计战术。基准是一个中等强度、思路常规的 bot，它在正式比赛是 0 分线；战胜基准不代表足够强，正式对手远强于基准。正式赛会对战多轮，用 Bradley-Terry 模型拟合实力值。',
+      '解压 workspace.zip，阅读 README.md 和 RULES.md，编写支持 2–15 方的夺旗 bot。' + clockLine(options.minutes ?? 90) + '允许本地工具、对战和复盘，禁止联网、调用其他 AI 或查看其他选手资料。提交 workspace/submission/bot.cpp，简述策略。',
+      '',
+      '## 本次评测禁止调用的工具',
+      '',
+      blacklist.length === 0 ? '（无）' : blacklist.join('\n'),
+    ].join('\n')
   },
 }
 
@@ -257,7 +151,7 @@ export const TASK_DEFINITIONS: Readonly<Record<string, TaskDefinition>> = {
   [CTF_TASK]: CTF_DEFINITION,
 }
 
-/** Install, check, and prompt services for the task pack. */
+/** Install, check, and prompt services for the task packs. */
 export class TaskService {
   private readonly guard: Guard
   private readonly registry: { get(id: string): { path: string; title?: string } | undefined }
@@ -275,10 +169,7 @@ export class TaskService {
     try {
       entries = fs.readdirSync(workspace.path)
     } catch (error: unknown) {
-      return {
-        ok: false, workspaceId, path: workspace.path, empty: false, entries: [],
-        error: '读取工作区失败：' + (error instanceof Error ? error.message : String(error)),
-      }
+      return { ok: false, workspaceId, path: workspace.path, empty: false, entries: [], error: '读取工作区失败：' + (error instanceof Error ? error.message : String(error)) }
     }
     return { ok: true, workspaceId, path: workspace.path, empty: entries.length === 0, entries }
   }
@@ -314,10 +205,7 @@ export class TaskService {
     const checked = this.check(workspaceId)
     if (!checked.ok) return { ok: false, error: checked.error, workspaceId }
     if (!checked.empty) {
-      return {
-        ok: false, workspaceId, workspacePath: checked.path,
-        error: '工作区不是空的；未执行任何操作。请换一个空工作区，或按手动通道处理。',
-      }
+      return { ok: false, workspaceId, workspacePath: checked.path, error: '工作区不是空的；未执行任何操作。请换一个空工作区，或按手动通道处理。' }
     }
     if (!this.guard.active) {
       return { ok: false, workspaceId, workspacePath: checked.path, error: '请先启用评测守护，再安装评测任务。' }

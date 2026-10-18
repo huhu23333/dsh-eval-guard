@@ -69,6 +69,27 @@ const SYSTEM_READ_DIRS: readonly string[] = [
   '/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/etc', '/opt', '/sys', '/var/lib',
 ]
 
+/** Python stdlib/venv directories that may live next to a workspace. */
+function pythonRuntimeDirs(workspace: string): string[] {
+  const dirs = new Set<string>()
+  for (const ancestor of [workspace, ...ancestorsOf(workspace)]) {
+    for (const lib of ['lib', 'lib64']) {
+      const base = path.join(ancestor, lib)
+      try {
+        for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+          if (entry.isDirectory() && entry.name.startsWith('python')) {
+            const real = fs.realpathSync.native(path.join(base, entry.name))
+            if (!SYSTEM_READ_DIRS.some(system => real === system || real.startsWith(system + '/'))) dirs.add(real)
+          }
+        }
+      } catch {
+        // no Python tree at this level
+      }
+    }
+  }
+  return [...dirs]
+}
+
 /** Ancestors of a path, outermost first. */
 export function ancestorsOf(target: string): string[] {
   const out: string[] = []
@@ -223,6 +244,10 @@ function writePolicy(workspace: string, rules: readonly PathRule[]): string {
   }
   lines.push(line('read', runtime.node))
   for (const file of [runtime.ptcProcess, runtime.ptcControl]) if (file !== undefined) lines.push(line('read', file))
+  for (const dir of pythonRuntimeDirs(workspace)) {
+    lines.push(line('read', dir))
+    for (const ancestor of ancestorsOf(dir)) lines.push(line('exact', ancestor))
+  }
   // User ordered rules apply to reads; later rules win.
   for (const rule of rules) lines.push(line('rule', (rule.allow ? 'allow ' : 'deny ') + rule.path))
   // A workspace under the host /tmp cannot also bind its .tmp over /tmp:
@@ -273,6 +298,7 @@ function bwrapArgs(workspace: string, cwd: string, rules: readonly PathRule[], r
   }
   for (const manifest of manifests) args.push('--ro-bind', manifest, manifest)
   for (const file of [runtime.ptcProcess, runtime.ptcControl]) if (file !== undefined) args.push('--ro-bind', file, file)
+  for (const dir of pythonRuntimeDirs(workspace)) args.push('--ro-bind', dir, dir)
   // Read-only exceptions the user asked for ('!' lines).
   for (const rule of rules) {
     if (!rule.allow) continue
