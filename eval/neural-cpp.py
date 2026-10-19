@@ -36,7 +36,16 @@ def main() -> int:
         root = Path(td)
         candidate = root / 'candidate'
         clean_copy(workspace, candidate)
-        build = candidate / 'build'
+        # The first task installation copied workspace.zip into the session
+        # root; some agents extracted it into workspace/ instead of the root.
+        # Accept both layouts so already-produced workspaces remain evaluable.
+        source = candidate
+        if not (source / 'CMakeLists.txt').is_file() and (candidate / 'workspace' / 'CMakeLists.txt').is_file():
+            source = candidate / 'workspace'
+        if not (source / 'CMakeLists.txt').is_file():
+            return fail({'task': 'neural-cpp', 'ok': False, 'error': 'CMakeLists.txt missing',
+                         'output': 'Expected CMakeLists.txt at workspace root or workspace/CMakeLists.txt'})
+        build = source / 'build'
         if build.exists():
             shutil.rmtree(build, ignore_errors=True)
         build.mkdir()
@@ -46,11 +55,11 @@ def main() -> int:
         if cmake is None or compiler is None:
             return fail({'task': 'neural-cpp', 'ok': False, 'error': 'cmake/g++ not available'})
 
-        cfg = run([cmake, '-S', '.', '-B', 'build', '-DCMAKE_BUILD_TYPE=Release'], candidate, 180)
+        cfg = run([cmake, '-S', '.', '-B', 'build', '-DCMAKE_BUILD_TYPE=Release'], source, 180)
         if cfg.returncode != 0:
             return fail({'task': 'neural-cpp', 'ok': False, 'error': 'cmake configure failed',
                          'output': (cfg.stdout + cfg.stderr)[-5000:]})
-        bld = run([cmake, '--build', 'build', '-j4'], candidate, 1800)
+        bld = run([cmake, '--build', 'build', '-j4'], source, 1800)
         if bld.returncode != 0:
             return fail({'task': 'neural-cpp', 'ok': False, 'error': 'build failed',
                          'output': (bld.stdout + bld.stderr)[-5000:]})
@@ -60,7 +69,7 @@ def main() -> int:
 
         exe = root / 'test_neural'
         cc = run([compiler, '-std=c++17', '-O3', '-pthread',
-                  '-I', str(candidate / 'include'), str(hidden), str(lib),
+                  '-I', str(source / 'include'), str(hidden), str(lib),
                   '-lm', '-o', str(exe)], root, 300)
         if cc.returncode != 0:
             return fail({'task': 'neural-cpp', 'ok': False, 'error': 'hidden test compile failed',

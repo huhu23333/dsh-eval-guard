@@ -34,7 +34,9 @@
 - 3 个长时单任务：Commit0 单库实现、SWE-Bench Pro 单任务、FeatureBench 单 feature。
 - 1 个纯 C++ 项目：Neural-CPP 张量运算与反向传播后端。
 
-Neural-CPP 工作区只包含 TASK.md、CMakeLists.txt 和 include/nn/nn.hpp；实现在 src/ 中从零完成，纯 C++17，无 Python/OpenCL/第三方库。
+Neural-CPP 安装时自动把 workspace.zip 解压到工作区根目录，并在完成后移除 setup.sh；agent 从根目录的 CMakeLists.txt 开始。工作区只包含 TASK.md、CMakeLists.txt 和 include/nn/nn.hpp；实现在 src/ 中从零完成，纯 C++17，无 Python/OpenCL/第三方库。
+
+评测器同时兼容旧安装留下的嵌套布局：若根目录没有 CMakeLists.txt，会自动改用 workspace/CMakeLists.txt，避免已经产出的工作区无法评测。
 
 评测时在临时目录独立构建，然后从 assets/neural-cpp/hidden/ 注入 C++ 测试源码；测试数据由固定种子在进程内生成，不依赖或复制外部数据文件。
 

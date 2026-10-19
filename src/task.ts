@@ -28,7 +28,7 @@ export const TASKS: readonly TaskInfo[] = [
   { id: COMMIT0_TASK, label: COMMIT0_TASK_LABEL, description: 'Commit0 单库实现：按规格从零实现一个 Python 库，单元测试评分。', timeLimitMinutes: 480, timeLimitEnabled: false, needsSetup: true, repoUrl: 'https://github.com/msiemens/tinydb', remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/msiemens/tinydb.git' }] },
   { id: SWE_BENCH_PRO_TASK, label: SWE_BENCH_PRO_TASK_LABEL, description: 'SWE-Bench Pro 单任务：在真实仓库中修复一个多文件 issue，隐藏测试评分。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true, repoUrl: 'https://github.com/ansible/ansible', remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/ansible/ansible.git' }, { id: 'gitee', label: 'Gitee 镜像', url: 'https://gitee.com/mirrors/ansible.git' }] },
   { id: FEATUREBENCH_TASK, label: FEATUREBENCH_TASK_LABEL, description: 'FeatureBench 单 feature：实现一个跨文件功能，隐藏测试评分。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true, repoUrl: 'https://github.com/mwaskom/seaborn', remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/mwaskom/seaborn.git' }, { id: 'gitee', label: 'Gitee 镜像', url: 'https://gitee.com/mirrors/seaborn.git' }, { id: 'gitcode', label: 'GitCode 镜像', url: 'https://gitcode.com/gh_mirrors/se/seaborn.git' }] },
-  { id: NEURAL_CPP_TASK, label: NEURAL_CPP_TASK_LABEL, description: '从零实现纯 C++ 张量运算与反向传播后端；隐藏测试统计正确性与速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: false },
+  { id: NEURAL_CPP_TASK, label: NEURAL_CPP_TASK_LABEL, description: '从零实现纯 C++ 张量运算与反向传播后端；隐藏测试统计正确性与速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
 ]
 
 /** The tank task definition (original prompt; only halftime mechanics removed). */
@@ -241,12 +241,12 @@ export const NEURAL_CPP_DEFINITION: TaskDefinition = {
   asset: path.join(packageRoot(), 'assets', 'neural-cpp', 'workspace.zip'),
   timeLimitMinutes: 1440,
   timeLimitEnabled: false,
-  needsSetup: false,
+  needsSetup: true,
   prompt() {
     return [
       '这是一个纯 C++ 张量运算后端任务：从零实现 DType、Tensor、视图/切片、逐元素与矩阵运算、自动求导和线程池；不提供 Python 或 OpenCL 支持。',
       '',
-      '当前目录有 workspace.zip。请先解压，进入 workspace 目录，阅读 TASK.md 和 include/nn/nn.hpp，按接口约定实现 src/ 下的静态库，并用 CMake 构建。',
+      '当前 workspace 已经由安装器准备好：包含 TASK.md、CMakeLists.txt 和 include/nn/nn.hpp。请阅读 TASK.md 和公开头文件，按接口约定实现 src/ 下的静态库，并用 CMake 构建。',
       '',
       '要求：',
       '- 仅使用 Linux + GCC + C++17 标准库；不允许引入第三方依赖；',
