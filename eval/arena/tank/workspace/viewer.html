@@ -1,0 +1,1150 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>坦克大战回放</title>
+<!--
+  坦克大战回放查看器。单个文件，不依赖任何外部资源，双击用浏览器打开。
+  数据：arena.py expand 展开出的逐帧 JSON（tank-frames-1）。三种来法：
+    1. arena.py play / arena.py html 生成的 HTML 里数据已经嵌好，打开就能看；
+    2. 把 *.frames.json 拖进页面；
+    3. 点右上角"打开文件"。
+  地址栏参数（?turn=12&p=0.5 这种写法，# 后面也行）见页面里的"帮助"。
+-->
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#0c0e11;--panel:#151920;--panel2:#1b2029;--line:#2a313c;--ink:#e9edf3;--ink2:#b3bcc8;--muted:#7c8794;
+  --c0:#d47a1a;--c0l:#f6b25c;--c1:#3d8fe8;--c1l:#9ccbff;--gold:#ffd24a;--bad:#ff5a4d;--warn:#f5c542;--good:#62d08a;
+  --board:600px;
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font-family:"Segoe UI","Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif;
+  font-size:clamp(12px,0.84vw,16px);overflow:hidden;-webkit-font-smoothing:antialiased}
+body.narrow{overflow:auto}
+#app{display:grid;grid-template-rows:auto minmax(0,1fr) auto;height:100vh}
+#app>header{grid-row:1}#app>main{grid-row:2}#app>footer{grid-row:3}
+body.narrow #app{height:auto;min-height:100vh}
+b,strong{font-weight:600}
+.mono{font-family:Consolas,"Cascadia Mono","Courier New",monospace}
+
+header{display:flex;align-items:center;gap:1em;padding:.5em 1em;background:#101318;border-bottom:1px solid var(--line);min-height:3em}
+header h1{margin:0;font-size:1.25em;letter-spacing:.08em;white-space:nowrap}
+header h1 small{font-weight:400;color:var(--muted);font-size:.72em;letter-spacing:0;margin-left:.6em}
+#meta{color:var(--ink2);font-size:.9em;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#meta .warnchip{color:var(--bg);background:var(--warn);border-radius:.3em;padding:.05em .45em;margin-left:.6em;font-weight:600}
+button,select{background:#232a35;color:var(--ink);border:1px solid #3a4452;border-radius:.4em;padding:.4em .75em;font:inherit;font-size:.92em;cursor:pointer;line-height:1.2}
+button:hover,select:hover{background:#2e3745}
+button:focus-visible,select:focus-visible{outline:2px solid var(--gold);outline-offset:1px}
+
+main{display:grid;grid-template-columns:minmax(0,1fr) var(--board) minmax(0,1fr);gap:.75em;padding:.75em;min-height:0}
+body.narrow main{display:flex;flex-direction:column;align-items:stretch}
+aside{display:flex;flex-direction:column;gap:.75em;min-height:0;min-width:0;overflow:auto;scrollbar-width:thin}
+aside>.team{flex:none}
+body.narrow aside{overflow:visible}
+body.narrow #stage{order:-1}
+#stage{position:relative;width:var(--board);height:var(--board);align-self:center;justify-self:center;flex:none}
+body.narrow #stage{margin:0 auto}
+#board{width:100%;height:100%;display:block;border-radius:.4em}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:.6em;padding:.7em .85em;min-height:0;min-width:0}
+.panel h2{margin:0 0 .5em;font-size:.82em;font-weight:600;color:var(--muted);letter-spacing:.12em;display:flex;justify-content:space-between;gap:.6em;align-items:baseline}
+.panel h2 span{letter-spacing:0;font-weight:400}
+
+/* ---- 队伍卡片 ---- */
+.team{border-left:.4em solid var(--tc);position:relative}
+.team.s0{--tc:var(--c0);--tcl:var(--c0l)}
+.team.s1{--tc:var(--c1);--tcl:var(--c1l)}
+.thead{display:flex;align-items:center;gap:.6em;margin-bottom:.5em}
+.mark{width:1.15em;height:1.15em;flex:none;border-radius:.2em;background:var(--tc);border:2px solid var(--tcl)}
+.s1 .mark,.mark.s1{background:repeating-linear-gradient(135deg,var(--c1) 0 3px,#0d1626 3px 6px);border-color:var(--c1l)}
+.mark.s0{background:var(--c0);border-color:var(--c0l)}
+.tname{font-size:1.5em;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.tseat{color:var(--muted);font-size:.85em;white-space:nowrap;margin-left:auto}
+.tres{font-size:.85em;font-weight:700;padding:.1em .55em;border-radius:.3em;white-space:nowrap}
+.tflt{font-size:.8em;font-weight:700;padding:.1em .5em;border-radius:.3em;white-space:nowrap;background:var(--bad);color:#fff}.tflt:empty{display:none}
+.tres.win{background:var(--gold);color:#1a1300}
+.tres.lose{background:#333b47;color:var(--ink2)}
+.tres.draw{background:#333b47;color:var(--ink)}
+.baserow{display:flex;align-items:center;gap:.6em;margin-bottom:.5em}
+.baserow .lbl{color:var(--ink2);font-size:.88em;white-space:nowrap}
+.hpbar{flex:1;display:flex;gap:2px;height:1.05em}
+.hpbar i{flex:1;background:#262d38;border-radius:2px}
+.hpbar i.on{background:var(--tc)}
+.hpbar i.hit{background:#fff}
+.hpnum{font-size:1.5em;font-weight:700;min-width:2.6em;text-align:right;font-family:Consolas,monospace}
+.hpnum small{font-size:.6em;color:var(--muted);font-weight:400}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:.4em;margin-bottom:.5em}
+.stats div{background:var(--panel2);border-radius:.35em;padding:.25em .5em;min-width:0}
+.stats b{display:block;font-size:1.2em;font-family:Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stats span{display:block;font-size:.72em;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.stats .near b{color:var(--warn)}.stats .over b{color:var(--bad)}
+.trow{display:grid;grid-template-columns:3.1em minmax(0,1fr) auto;gap:.6em;align-items:center;padding:.3em 0;border-top:1px solid #222935}
+.trow canvas{width:3.1em;height:3.1em;display:block;background:#0e1014;border-radius:.3em}
+.trow.dead canvas{opacity:.35}
+.tl1{display:flex;align-items:baseline;gap:.5em;white-space:nowrap}
+.tl1 b{font-size:1.05em}
+.tl1 .pos{color:var(--muted);font-size:.85em;font-family:Consolas,monospace}
+.pips{display:inline-flex;gap:2px;vertical-align:middle}
+.pips i{width:.7em;height:.55em;border:1px solid var(--good);border-radius:1px}
+.pips i.on{background:var(--good)}
+.lv{color:var(--gold);font-size:.85em;letter-spacing:.05em}
+.lv.z{color:var(--muted)}
+.tl2{color:var(--ink2);font-size:.82em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tl2 .rel{color:var(--warn)}.tl2 .ded{color:var(--bad)}
+.ord{font-size:.95em;background:var(--panel2);border:1px solid #333c49;border-radius:.35em;padding:.25em .6em;white-space:nowrap;min-width:5.6em;text-align:center}
+.ord .ar{font-family:"Segoe UI Symbol",Consolas,monospace;font-weight:700;color:var(--tcl);font-size:1.1em}
+.ord.none{color:var(--muted);border-style:dashed;background:none}
+.ord .x{color:var(--bad);font-weight:700}
+.ord small{color:var(--muted)}
+
+/* ---- 中间：回合信息 ---- */
+#turnbox{flex:1 0 auto;display:flex;flex-direction:column;justify-content:center;gap:.55em;text-align:center}
+#turnbig{font-size:2.6em;font-weight:700;line-height:1;font-family:Consolas,"Microsoft YaHei UI","Microsoft YaHei",sans-serif}
+#turnbig small{font-size:.42em;color:var(--muted);font-weight:400;font-family:inherit}
+#phases{display:flex;gap:.35em;justify-content:center}
+#phases i{font-style:normal;font-size:.8em;padding:.15em .7em;border-radius:1em;background:var(--panel2);color:var(--muted);border:1px solid transparent}
+#phases i.on{color:#111;background:var(--gold)}
+#supplyline{color:var(--ink2);font-size:.92em}
+#supplyline b{color:var(--gold);font-family:Consolas,monospace;font-size:1.15em}
+#legend{width:100%;display:block}
+@media (max-height:880px){body:not(.narrow) #legend{display:none}}
+
+/* ---- 右栏 ---- */
+#evpanel{flex:2.3;display:flex;flex-direction:column}
+#events{flex:1;overflow:auto;font-size:.95em;line-height:1.62;min-height:3em}
+#events .grp{color:var(--muted);font-size:.78em;letter-spacing:.1em;margin-top:.35em;border-bottom:1px solid #222935}
+#events .ev{display:flex;gap:.5em;align-items:baseline}
+#events .ev .ic{width:1.2em;text-align:center;flex:none;font-weight:700}
+#events .ev.big{font-weight:600}
+#events .none{color:var(--muted)}
+.tk{white-space:nowrap;font-weight:600}
+.tk i{display:inline-block;width:.62em;height:.62em;margin-right:.25em;border-radius:1px;vertical-align:baseline}
+.tk.s0{color:var(--c0l)}.tk.s0 i{background:var(--c0l)}
+.tk.s1{color:var(--c1l)}.tk.s1 i{border:2px solid var(--c1l);border-radius:50%}
+.c-bad{color:var(--bad)}.c-gold{color:var(--gold)}.c-mut{color:var(--muted)}.c-ink2{color:var(--ink2)}
+#thinkpanel{flex:none;position:relative}
+#think{width:100%;height:11.5em;display:block;cursor:pointer}
+#thinknote{font-size:.76em;color:var(--muted);margin-top:.3em;line-height:1.5}
+#dbgpanel{flex:1;display:flex;flex-direction:column}
+#debug{flex:1;overflow:auto;font-size:.85em;line-height:1.6;min-height:3em}
+#debug .fault{color:var(--bad);cursor:pointer}
+#debug .fault:hover{text-decoration:underline}
+#debug .fault.now{font-weight:700}
+#debug .ln{font-family:Consolas,"Microsoft YaHei",monospace;white-space:pre-wrap;word-break:break-all}
+#debug .sub{color:var(--muted);font-size:.9em;margin-top:.3em}
+
+/* ---- 底部控制条 ---- */
+footer{display:flex;align-items:center;gap:.8em;padding:.55em 1em .65em;background:#101318;border-top:1px solid var(--line)}
+footer .btns{display:flex;gap:.3em;flex:none}
+footer button{min-width:2.6em;font-size:1em;padding:.5em .6em}
+#bplay{min-width:5.2em;background:#35507a;border-color:#4a6da3;font-weight:600}
+#bplay:hover{background:#40609180}
+#tlwrap{flex:1;min-width:8em;position:relative}
+#timeline{width:100%;height:4.6em;display:block;cursor:pointer;touch-action:none}
+#tllegend{flex:none;font-size:.76em;color:var(--ink2);line-height:1.5;white-space:nowrap}
+#tllegend b{display:inline-block;width:1.2em;text-align:center}
+#turnlabel{flex:none;font-family:Consolas,monospace;font-size:1.25em;min-width:5.5em;text-align:right}
+#turnlabel small{color:var(--muted);font-size:.7em}
+.tip{position:fixed;z-index:20;background:#000d;border:1px solid #445;border-radius:.4em;padding:.35em .6em;font-size:.82em;line-height:1.5;pointer-events:none;display:none;max-width:26em;white-space:pre-line}
+body.narrow footer{flex-wrap:wrap;position:sticky;bottom:0}
+body.narrow #tllegend{display:none}
+body.narrow #tlwrap{flex-basis:100%;order:9}
+body.clean header,body.clean #tllegend{display:none}
+
+/* ---- 覆盖层 ---- */
+#endcard{position:absolute;inset:0;display:none;align-items:center;justify-content:center;background:#05070acc;border-radius:.4em}
+#endcard.on{display:flex}
+#endin{background:#12161ccc;border:2px solid var(--gold);border-radius:.8em;padding:1.6em 2.4em;text-align:center;max-width:86%;box-shadow:0 0 0 6px #0008}
+#endin .ttl{font-size:.95em;letter-spacing:.4em;color:var(--muted);margin-bottom:.5em}
+#endin .who{font-size:2.8em;font-weight:800;line-height:1.15;word-break:break-all}
+#endin .why{font-size:1.25em;color:var(--ink);margin:.5em 0 .9em}
+#endin table{margin:0 auto .9em;border-collapse:collapse;font-size:1.05em}
+#endin td{padding:.15em .9em;font-family:Consolas,"Microsoft YaHei",monospace}
+#endin td.k{color:var(--muted);font-family:inherit;font-size:.85em}
+#endin td.l{text-align:right}#endin td.r{text-align:left}
+#endin .foot{color:var(--muted);font-size:.8em;margin-top:.7em}
+#drop{position:absolute;inset:0;display:none;align-items:center;justify-content:center;text-align:center;border:3px dashed #3a4452;border-radius:.6em;background:var(--panel);padding:2em;line-height:1.9}
+#drop.on{display:flex}
+#drop b{font-size:1.5em}
+#drop code{background:#0008;padding:.1em .4em;border-radius:.3em;font-family:Consolas,monospace}
+body.dragging #stage{outline:3px dashed var(--gold);outline-offset:4px}
+#help{position:fixed;inset:0;background:#000b;display:none;align-items:center;justify-content:center;z-index:30}
+#help.on{display:flex}
+#helpin{background:var(--panel);border:1px solid var(--line);border-radius:.7em;padding:1.2em 1.6em;max-width:56em;max-height:90vh;overflow:auto;line-height:1.7;font-size:.95em}
+#helpin h3{margin:.6em 0 .2em;font-size:1em;color:var(--gold)}
+#helpin table{border-collapse:collapse}
+#helpin td{padding:.05em 1.2em .05em 0;vertical-align:top}
+#helpin kbd,#helpin code{background:#0009;border:1px solid #3a4452;border-radius:.3em;padding:0 .4em;font-family:Consolas,monospace;font-size:.92em;white-space:nowrap}
+#err{position:fixed;left:0;right:0;top:0;background:#7a1512;color:#fff;padding:.4em 1em;font-size:.9em;z-index:40;display:none;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<div id="err"></div>
+<div id="app">
+  <header>
+    <h1>坦克大战<small>回放</small></h1>
+    <div id="meta">把 <span class="mono">*.frames.json</span> 拖进来，或点"打开文件"</div>
+    <button id="bopen" title="打开展开后的逐帧 JSON（O）">打开文件</button>
+    <button id="bhelp" title="快捷键和地址栏参数（H）">帮助</button>
+  </header>
+  <main>
+    <aside id="left">
+      <div class="panel team s1" id="team1"></div>
+      <div class="panel" id="turnbox">
+        <div id="turnbig">–</div>
+        <div id="phases"><i>开炮</i><i>小步 1</i><i>小步 2</i><i>回合末</i></div>
+        <div id="supplyline"></div>
+        <canvas id="legend"></canvas>
+      </div>
+      <div class="panel team s0" id="team0"></div>
+    </aside>
+    <section id="stage">
+      <canvas id="board"></canvas>
+      <div id="endcard"><div id="endin"></div></div>
+      <div id="drop"><div><b>把展开后的回放拖到这里</b><br>
+        文件由 <code>arena.py expand 回放.json</code> 生成（<code>*.frames.json</code>）。<br>
+        也可以直接用 <code>arena.py html 回放.json</code> 生成一个打开就能看的网页。<br>
+        <button id="bopen2" style="margin-top:.8em;font-size:1.05em">打开文件</button></div></div>
+    </section>
+    <aside id="right">
+      <div class="panel" id="evpanel"><h2>本回合事件<span id="evturn"></span></h2><div id="events"></div></div>
+      <div class="panel" id="thinkpanel"><h2>每回合思考用量<span id="thinkunit"></span></h2><canvas id="think"></canvas><div id="thinknote"></div></div>
+      <div class="panel" id="dbgpanel"><h2>故障与调试输出<span id="dbgturn"></span></h2><div id="debug"></div></div>
+    </aside>
+  </main>
+  <footer>
+    <div class="btns">
+      <button id="bfirst" title="回到开局（Home）">⏮</button>
+      <button id="bpk" title="上一个关键事件（[）">◀◆</button>
+      <button id="bprev" title="上一回合（←）">◀</button>
+      <button id="bplay" title="播放 / 暂停（空格）">▶ 播放</button>
+      <button id="bnext" title="下一回合（→）">▶</button>
+      <button id="bnk" title="下一个关键事件（]）">◆▶</button>
+      <button id="blast" title="跳到终局（End）">⏭</button>
+    </div>
+    <select id="speed" title="播放速度（+ / -）"></select>
+    <div id="tllegend"></div>
+    <div id="tlwrap"><canvas id="timeline"></canvas></div>
+    <div id="turnlabel"></div>
+  </footer>
+</div>
+<div class="tip" id="tip"></div>
+<div id="help"><div id="helpin"></div></div>
+<input type="file" id="file" accept=".json,.gz,application/json" hidden>
+
+<script>
+"use strict";
+// 数据内嵌的位置：arena.py 把下一行的占位换成展开后的 JSON。
+const EMBED=/*__TANK_DATA__*/null;
+
+// ====================================================================
+// 常量与小工具
+// ====================================================================
+const $=id=>document.getElementById(id);
+const DV={U:[0,-1],D:[0,1],L:[-1,0],R:[1,0]},OPP={U:'D',D:'U',L:'R',R:'L'};
+const ANG={U:0,R:Math.PI/2,D:Math.PI,L:-Math.PI/2};
+const ARROW={U:'↑',D:'↓',L:'←',R:'→'};
+const TYPE_CN={fast:'快速',fire:'火力',armor:'装甲'};
+const STYLE_CN={'-1':'按种子轮换',0:'开阔',1:'多砖',2:'多水',3:'多钢'};
+const PAL=[{m:'#d47a1a',l:'#f6b25c',d:'#7a430b',k:'#2a1704'},{m:'#3d8fe8',l:'#9ccbff',d:'#1c4a82',k:'#0d1626'}];
+const GOLD='#ffd24a',BAD='#ff5a4d',WARN='#f5c542';
+const FONT='"Segoe UI","Microsoft YaHei UI","Microsoft YaHei",sans-serif',NUMFONT='Consolas,"Courier New",monospace';
+const SPEEDS=[0.5,1,2,4,8,16];
+const TAIL_MAX=1.3;          // 停在某一回合后，回合末的特效再播多久（单位：回合）
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const esc=t=>String(t).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtMs=v=>v==null?'–':v>=100?v.toFixed(0):v>=10?v.toFixed(1):v.toFixed(2);
+
+// 地址栏参数：?a=1&b=2 和 #a=1&b=2 都认
+const ARGS=(()=>{const o={};for(const part of[location.search.slice(1),location.hash.slice(1)])
+  for(const kv of part.split('&')){if(!kv)continue;const i=kv.indexOf('=');o[decodeURIComponent(i<0?kv:kv.slice(0,i))]=i<0?'1':decodeURIComponent(kv.slice(i+1))}return o})();
+const argNum=(k,d)=>k in ARGS&&ARGS[k]!==''&&isFinite(+ARGS[k])?+ARGS[k]:d;
+
+window.addEventListener('error',e=>{const el=$('err');el.style.display='block';el.textContent='查看器出错：'+e.message+'（'+(e.filename||'').split('/').pop()+':'+e.lineno+'）'});
+
+// ====================================================================
+// 状态
+// ====================================================================
+let D=null,F=[],N=0;            // 数据、帧、最后一帧的下标
+let simCache=[],facing=[],keys=[],keyFrames=[],stderrByTurn=[],faultList=[];
+let cur=0,prog=0,tail=TAIL_MAX; // 当前帧；正在播放第 cur+1 回合的进度（0 = 停在 cur）；停下后经过的时间
+let playing=false,stepping=false,speed=2,showEnd=true,showCoords=true,lastT=0,dirty=true;
+let shownTurn=-1,hoverThink=-1,hoverTl=-1;
+let holdTail=false;           // 地址栏给了 tail= 时画面定在那一刻，直到有任何操作
+
+// ====================================================================
+// 载入
+// ====================================================================
+function load(data){
+  if(!data||data.format!=='tank-frames-1'){
+    const why=data&&data.format==='tank-replay-1'
+      ?'这是原始回放（tank-replay-1），查看器读的是展开后的逐帧 JSON。\n先运行 arena.py expand 回放.json 得到 *.frames.json，或者直接 arena.py html 回放.json 生成网页。'
+      :'这个文件不是展开后的回放（需要 format 为 tank-frames-1）。';
+    alert(why);return false;
+  }
+  D=data;F=D.frames;N=F.length-1;simCache=[];cur=0;prog=0;tail=TAIL_MAX;playing=false;stepping=false;shownTurn=-1;showEnd=true;
+  // 朝向：规则里坦克没有朝向，这里按"最近一次移动或开炮的方向"画，只为好看
+  facing=[F[0].tanks.map(t=>t.seat?'D':'U')];
+  for(let k=1;k<=N;k++){const f=facing[k-1].slice(),fr=F[k];
+    fr.tanks.forEach((t,i)=>{const was=F[k-1].tanks[i].alive,o=fr.orders?fr.orders[t.seat][i%3]:'S';
+      if(was&&o&&o!=='S')f[i]=o[0]==='F'?o[1]:o[o.length-1];
+      if(!t.alive||!was)f[i]=t.seat?'D':'U'});
+    facing.push(f)}
+  // 关键事件：击毁、基地掉血、吃星、故障。lane = 得利的一方（故障记在出故障的一方）
+  keys=F.map(()=>[]);
+  for(let k=1;k<=N;k++)for(const e of F[k].events){
+    if(e.type==='death')keys[k].push({kind:'kill',lane:1-seatOf(e.tank),text:`${tname(e.tank)}被毁`+(e.by>=0?'（压出生点）':'')});
+    else if(e.type==='base_hit')keys[k].push({kind:'base',lane:1-e.seat,text:`${D.names[e.seat]} 的基地被打中`});
+    else if(e.type==='star')keys[k].push({kind:'star',lane:seatOf(e.tank),text:`${tname(e.tank)}吃星升到 ${e.level} 级`});
+  }
+  faultList=(D.faults||[]).slice().sort((a,b)=>a.turn-b.turn);
+  for(const f of faultList)keys[clamp(f.turn,0,N)].push({kind:'fault',lane:f.seat,text:`${D.names[f.seat]} 故障：${faultKind(f.kind)}`});
+  keyFrames=[];keys.forEach((v,k)=>{if(v.length)keyFrames.push(k)});
+  stderrByTurn={};
+  (D.stderr||[]).forEach((list,seat)=>{for(const[turn,line]of list||[])(stderrByTurn[turn]=stderrByTurn[turn]||[]).push([seat,line])});
+  $('drop').classList.remove('on');
+  buildStatic();layout();
+  return true;
+}
+const seatOf=i=>i<3?0:1;
+const typeOf=i=>['fast','fire','armor'][i%3];
+const tname=i=>`${D.names[seatOf(i)]} 的${TYPE_CN[typeOf(i)]}`;
+const faultKind=k=>({timeout:'超出思考预算',illegal:'输出不合法',exit:'程序崩溃或退出'}[k]||k);
+function reasonText(r){
+  const M={base:'对方基地被毁',hp:'到回合上限，比基地血量',kills:'到回合上限，比击毁数',stars:'到回合上限，比吃星数',damage:'到回合上限，比基地伤害',draw:'到回合上限，各项都相同',fault:'对手故障判负'};
+  if(r&&r.startsWith('both_')){const x=r.slice(5);return '两个基地同回合被毁，'+(x==='draw'?'各项都相同':'比'+({kills:'击毁数',stars:'吃星数',damage:'基地伤害',hp:'基地血量'}[x]||x))}
+  return M[r]||r||'';
+}
+function nextSupply(turn){   // 下一批补给在第几回合末出现（严格大于 turn）
+  const P=D.params,a=P.supply_first,per=P.supply_period;
+  if(a==null||!per)return null;
+  const t=turn<a?a:a+(Math.floor((turn-a)/per)+1)*per;
+  return t>(P.max_turns||1e9)?null:t;
+}
+const maxHp=t=>(D.params[t.type+'_hp']||1)+(t.level||0)*(D.params.level_hp||0);
+
+// ====================================================================
+// 重建一回合的两个小步
+// 帧里只有回合前后的局面和事件。这里按引擎 step() 的顺序重算一遍，得到每辆车、每发子弹
+// 在每个小步的位置和下场，动画和静态标记都从它出。?check=1 会逐回合核对重算结果和下一帧是否一致。
+// ====================================================================
+function simulate(k){
+  if(simCache[k])return simCache[k];
+  const A=F[k-1],B=F[k],n=D.size,P=D.params;
+  const grid=A.map.map(r=>r.split(''));
+  const cell=(x,y)=>x<0||y<0||x>=n||y>=n?'X':grid[y][x];
+  const T=A.tanks.map(t=>({id:t.id,seat:t.seat,on:t.alive,x:t.x,y:t.y,pos:[[t.x,t.y]],bump:[null,null],mv:[null,null],fire:null,hitT:[]}));
+  const fx=[],walls=[],baseT=[[],[]];
+  // 基地限伤（base_hit_cap）：每个基地每回合最多扣这么多血，两个小步合计、敌我的子弹合在一起按先后数；
+  // 超出的子弹照样消失但不扣血。baseT 只记真正扣了血的那几次命中的时刻。
+  const baseHits=[0,0],baseLeft=[A.base_hp[0],A.base_hp[1]],cap=P.base_hit_cap||0;
+  const bullets=A.bullets.map(b=>({x:b.x,y:b.y,dir:b.dir,owner:b.owner,steel:b.steel,fresh:false,x0:b.x,y0:b.y,end:0,endS:9,kind:null}));
+  for(const e of B.events)if(e.type==='fire'){
+    const t=T[e.tank],at=A.tanks[e.tank];t.fire=e.dir;
+    bullets.push({x:t.x,y:t.y,dir:e.dir,owner:e.tank,steel:at.level>=2&&P.level2_steel!==0,fresh:true,x0:t.x,y0:t.y,end:0,endS:9,kind:null});
+    fx.push({t:0,type:'muzzle',x:t.x,y:t.y,dir:e.dir,seat:at.seat});
+  }
+  A.tanks.forEach((t,i)=>{
+    if(!t.alive||!B.orders)return;
+    const o=B.orders[t.seat][i%3]||'S';
+    if(o==='S'||o[0]==='F')return;
+    T[i].mv[0]=o[0];
+    if(o.length>1&&(P[t.type+'_speed']||1)>=2)T[i].mv[1]=o[1];
+  });
+  const maps=[];
+  for(let s=0;s<2;s++){
+    const at=(x,y)=>T.find(t=>t.on&&t.x===x&&t.y===y);
+    // (a) 坦克移动
+    const want=[];
+    for(const t of T){const d=t.mv[s];if(!t.on||!d)continue;
+      const tx=t.x+DV[d][0],ty=t.y+DV[d][1];
+      if(cell(tx,ty)==='.'&&!at(tx,ty))want.push({t,tx,ty});else t.bump[s]=d}
+    const moved=[];
+    for(const w of want){if(want.some(o=>o!==w&&o.tx===w.tx&&o.ty===w.ty))w.t.bump[s]=w.t.mv[s];else moved.push(w)}
+    for(const w of moved){w.fx=w.t.x;w.fy=w.t.y;w.t.x=w.tx;w.t.y=w.ty}
+    for(const t of T)t.pos.push([t.x,t.y]);
+    // (b) 子弹前进
+    const live=bullets.filter(b=>!b.end);
+    for(const b of live){b.px=b.x;b.py=b.y;b.x+=DV[b.dir][0];b.y+=DV[b.dir][1]}
+    // (c) 判定。back = 子弹在这一小步里飞到一半就没了的那部分（画面上撞在墙面、车身上，而不是格子中心）
+    const kill=(b,kind,back)=>{if(b.end)return (b.endS)/2;b.end=s+1;b.kind=kind;b.endS=s+1-back;return b.endS/2};
+    if(P.bullet_cancel!==0)for(let a=0;a<live.length;a++)for(let c=a+1;c<live.length;c++){
+      const ba=live[a],bb=live[c];
+      if(bb.dir===OPP[ba.dir]&&ba.px===bb.x&&ba.py===bb.y){
+        kill(ba,'cross',.5);const t=kill(bb,'cross',.5);
+        fx.push({t,type:'cancel',x:(ba.x+ba.px)/2,y:(ba.y+ba.py)/2})}
+    }
+    for(const w of moved)for(const b of live){
+      if(!b.end&&b.x===w.fx&&b.y===w.fy&&b.px===w.t.x&&b.py===w.t.y){
+        const t=kill(b,'swap',.5);w.t.hitT.push(t);fx.push({t,type:'hit',x:(b.x+b.px)/2,y:(b.y+b.py)/2,tank:w.t.id})}
+    }
+    const brk=[],stl=[];
+    for(const b of live){
+      if(b.end)continue;
+      const c=cell(b.x,b.y);
+      if(c==='.'){const v=at(b.x,b.y);if(v){const t=kill(b,'hit',.3);v.hitT.push(t);fx.push({t,type:'hit',x:b.x,y:b.y,tank:v.id})}}
+      else if(c==='~'){}
+      else if(c==='#'){const t=kill(b,'brick',.45);brk.push([b.x,b.y,t])}
+      else if(c==='@'){const t=kill(b,'steel',.45);if(b.steel)stl.push([b.x,b.y,t]);else fx.push({t,type:'ding',x:b.x,y:b.y,dir:b.dir})}
+      else if(c==='X'){const t=kill(b,'out',.5);fx.push({t,type:'out',x:b.x,y:b.y,dir:b.dir})}
+      else{const seat=+c,t=kill(b,'base',.4);baseHits[seat]++;
+        const dmg=baseLeft[seat]>0&&!(cap&&baseHits[seat]>cap);
+        if(dmg){baseLeft[seat]--;baseT[seat].push(t)}
+        fx.push({t,type:'basehit',x:b.x,y:b.y,seat,dmg})}
+    }
+    for(const[list,ch,kind]of[[brk,'#','brick'],[stl,'@','steel']])for(const[x,y,t]of list)if(grid[y][x]===ch){
+      grid[y][x]='.';walls.push({x,y,kind,sub:s+1});fx.push({t,type:'debris',x,y,kind})}
+    if(P.bullet_cancel!==0){
+      const left=live.filter(b=>!b.end);
+      for(let a=1;a<left.length;a++)for(let j=0;j<a;j++)if(left[j].x===left[a].x&&left[j].y===left[a].y){
+        kill(left[a],'same',0);kill(left[j],'same',0);fx.push({t:(s+1)/2,type:'cancel',x:left[a].x,y:left[a].y});break}
+    }
+    maps.push(grid.map(r=>r.join('')));
+  }
+  // 回合末的事：都记在 t = 1（两个小步走完的那一刻）
+  for(const e of B.events){
+    if(e.type==='death')fx.push({t:1,type:'death',x:e.x,y:e.y,tank:e.tank,by:e.by});
+    else if(e.type==='respawn')fx.push({t:1,type:'respawn',x:e.x,y:e.y,tank:e.tank});
+    else if(e.type==='star')fx.push({t:1,type:'star',x:e.x,y:e.y,tank:e.tank,level:e.level});
+    else if(e.type==='supply')fx.push({t:1,type:'supply',x:e.x,y:e.y});
+    else if(e.type==='bullet_cleared')fx.push({t:1,type:'cleared',x:e.x,y:e.y});
+  }
+  return simCache[k]={T,bullets,walls,maps,fx,baseT};
+}
+
+// 自查：重算结果和下一帧对不上的地方。返回问题列表（空 = 全部一致）。
+function selfCheck(){
+  const bad=[];
+  for(let k=1;k<=N;k++){
+    const A=F[k-1],B=F[k],S=simulate(k),ev=B.events,note=m=>{if(bad.length<40)bad.push(`回合 ${k}：${m}`)};
+    const touched=new Set(ev.filter(e=>['death','respawn','star'].includes(e.type)).map(e=>e.tank));
+    S.T.forEach((t,i)=>{
+      if(!t.on||touched.has(i)||!B.tanks[i].alive)return;
+      if(t.x!==B.tanks[i].x||t.y!==B.tanks[i].y)note(`${i} 号车位置 重算 (${t.x},${t.y}) 帧里 (${B.tanks[i].x},${B.tanks[i].y})`);
+      if(A.tanks[i].hp-t.hitT.length!==B.tanks[i].hp)note(`${i} 号车血量 重算 ${A.tanks[i].hp-t.hitT.length} 帧里 ${B.tanks[i].hp}`);
+    });
+    const blk=ev.filter(e=>e.type==='blocked').map(e=>e.tank+':'+e.sub).sort().join(),mine=[];
+    S.T.forEach((t,i)=>t.bump.forEach((d,s)=>{if(d)mine.push(i+':'+(s+1))}));
+    if(blk!==mine.sort().join())note(`没走成 重算 [${mine}] 事件 [${blk}]`);
+    const cleared=ev.filter(e=>e.type==='bullet_cleared').map(e=>e.x+','+e.y);
+    const sig=b=>[b.x,b.y,b.dir,b.owner,b.steel?1:0].join();
+    const a=S.bullets.filter(b=>!b.end&&!cleared.includes(b.x+','+b.y)).map(sig).sort().join(';'),b=B.bullets.map(sig).sort().join(';');
+    if(a!==b)note(`子弹 重算 [${a}] 帧里 [${b}]`);
+    if(S.maps[1].join()!==B.map.join())note('地形对不上');
+    const w1=S.walls.map(w=>[w.x,w.y,w.kind,w.sub].join()).sort().join(';'),w2=ev.filter(e=>e.type==='wall').map(w=>[w.x,w.y,w.kind,w.sub].join()).sort().join(';');
+    if(w1!==w2)note(`墙体事件 重算 [${w1}] 事件 [${w2}]`);
+    for(const[type,kinds]of[['hit',['hit','swap']],['base_hit',['base']]]){
+      const n1=ev.filter(e=>e.type===type).length,n2=S.bullets.filter(b=>kinds.includes(b.kind)).length;
+      if(n1!==n2)note(`${type} 次数 重算 ${n2} 事件 ${n1}`)}
+    const c1=ev.filter(e=>e.type==='cancel').length,c2=S.fx.filter(e=>e.type==='cancel').length;
+    if(c1!==c2)note(`对消次数 重算 ${c2} 事件 ${c1}`);
+    if(!D.params.base_regen&&!D.params.base_armor)for(const s of[0,1])
+      if(A.base_hp[s]-S.baseT[s].length!==B.base_hp[s])note(`${s} 号方基地血量 重算 ${A.base_hp[s]-S.baseT[s].length} 帧里 ${B.base_hp[s]}`);
+  }
+  return bad;
+}
+
+// ====================================================================
+// 画图：地形、坦克、子弹
+// ====================================================================
+const cv=$('board'),g=cv.getContext('2d');
+let CS=40,OX=0,OY=0;          // 格子边长、棋盘左上角（画布像素）
+let terrainKey='',terrainImg=null;
+const px=x=>OX+x*CS,py=y=>OY+y*CS,cxOf=x=>OX+(x+.5)*CS,cyOf=y=>OY+(y+.5)*CS;
+
+function drawBrick(c,x,y,s){
+  c.fillStyle='#2a1509';c.fillRect(x,y,s,s);
+  const rows=4,h=s/rows,m=Math.max(1,s*.035);
+  for(let r=0;r<rows;r++){const off=r%2?-s/4:0;
+    for(let i=0;i<3;i++){const bx=x+off+i*s/2,l=Math.max(x,bx)+m/2,rr=Math.min(x+s,bx+s/2)-m/2;if(rr<=l)continue;
+      c.fillStyle='#a4502a';c.fillRect(l,y+r*h+m/2,rr-l,h-m);
+      c.fillStyle='#c9713f';c.fillRect(l,y+r*h+m/2,rr-l,Math.max(1,h*.22))}}
+}
+function drawSteel(c,x,y,s){
+  c.fillStyle='#3d444d';c.fillRect(x,y,s,s);
+  const h=s/2,m=Math.max(1,s*.04);
+  for(let i=0;i<2;i++)for(let j=0;j<2;j++){const bx=x+i*h+m/2,by=y+j*h+m/2,w=h-m;
+    c.fillStyle='#e3e8ee';c.fillRect(bx,by,w,w);
+    c.fillStyle='#727c88';c.beginPath();c.moveTo(bx+w,by);c.lineTo(bx+w,by+w);c.lineTo(bx,by+w);c.closePath();c.fill();
+    c.fillStyle='#aab3be';c.fillRect(bx+w*.22,by+w*.22,w*.56,w*.56)}
+}
+function drawWater(c,x,y,s){
+  c.fillStyle='#143a6b';c.fillRect(x,y,s,s);
+  c.strokeStyle='#4b8fd6';c.lineWidth=Math.max(1,s*.05);c.lineCap='round';
+  for(let r=0;r<3;r++){const yy=y+s*(.22+r*.28);c.beginPath();
+    for(let i=0;i<=8;i++){const xx=x+s*(.1+i*.1),dy=Math.sin(i*1.57+r*1.3)*s*.045;i?c.lineTo(xx,yy+dy):c.moveTo(xx,yy+dy)}c.stroke()}
+}
+function drawEmpty(c,x,y,s){c.fillStyle='#0f1216';c.fillRect(x,y,s,s);c.strokeStyle='#1c2129';c.lineWidth=1;c.strokeRect(x+.5,y+.5,s-1,s-1)}
+function terrain(map){
+  const key=CS+'|'+cv.width+'|'+map.join('');
+  if(key===terrainKey)return terrainImg;
+  const n=D.size,im=terrainImg||document.createElement('canvas');im.width=n*CS;im.height=n*CS;
+  const c=im.getContext('2d');
+  for(let y=0;y<n;y++)for(let x=0;x<n;x++){const ch=map[y][x],X=x*CS,Y=y*CS;
+    drawEmpty(c,X,Y,CS);
+    if(ch==='#')drawBrick(c,X,Y,CS);else if(ch==='@')drawSteel(c,X,Y,CS);else if(ch==='~')drawWater(c,X,Y,CS)}
+  terrainKey=key;terrainImg=im;return im;
+}
+function starPath(c,x,y,r,rot=0){c.beginPath();for(let k=0;k<10;k++){const a=Math.PI/5*k-Math.PI/2+rot,rr=k%2?r*.45:r;c.lineTo(x+rr*Math.cos(a),y+rr*Math.sin(a))}c.closePath()}
+function drawStar(c,x,y,r,alpha=1){c.save();c.globalAlpha*=alpha;starPath(c,x,y,r);c.fillStyle=GOLD;c.fill();c.lineWidth=Math.max(1,r*.14);c.strokeStyle='#7a5a00';c.stroke();
+  starPath(c,x,y,r*.45);c.fillStyle='#fff6c8';c.fill();c.restore()}
+function drawSupply(c,x,y,s){   // 补给点：地上的虚线圈加四个刻度
+  c.save();c.strokeStyle='#b89a3a';c.lineWidth=Math.max(1,s*.04);c.setLineDash([s*.09,s*.07]);c.beginPath();c.arc(x,y,s*.36,0,7);c.stroke();c.setLineDash([]);
+  for(let k=0;k<4;k++){const a=k*Math.PI/2+Math.PI/4;c.beginPath();c.moveTo(x+Math.cos(a)*s*.4,y+Math.sin(a)*s*.4);c.lineTo(x+Math.cos(a)*s*.48,y+Math.sin(a)*s*.48);c.stroke()}
+  c.restore()}
+function drawSpawn(c,x,y,s,seat){   // 出生点：四个角标
+  c.save();c.strokeStyle=PAL[seat].m;c.globalAlpha*=.85;c.lineWidth=Math.max(1.5,s*.055);const a=s*.42,b=s*.2;
+  for(const[sx,sy]of[[-1,-1],[1,-1],[1,1],[-1,1]]){c.beginPath();c.moveTo(x+sx*a,y+sy*(a-b));c.lineTo(x+sx*a,y+sy*a);c.lineTo(x+sx*(a-b),y+sy*a);c.stroke()}
+  c.restore()}
+function drawBase(c,x,y,s,seat,hp,maxhp,flash){
+  const p=PAL[seat],X=x-s/2,Y=y-s/2;
+  c.save();
+  c.fillStyle=hp>0?'#0b0d10':'#1a1414';c.fillRect(X,Y,s,s);
+  if(hp>0){
+    // 盾形徽记：0 号方实心，1 号方斜纹（不只靠颜色区分）
+    const sh=new Path2D();sh.moveTo(x-s*.34,y-s*.40);sh.lineTo(x+s*.34,y-s*.40);sh.lineTo(x+s*.34,y-s*.02);sh.lineTo(x,y+s*.26);sh.lineTo(x-s*.34,y-s*.02);sh.closePath();
+    c.fillStyle=flash?'#fff':p.m;c.fill(sh);
+    if(seat===1&&!flash){c.save();c.clip(sh);c.strokeStyle=p.k;c.lineWidth=s*.07;for(let i=-4;i<5;i++){c.beginPath();c.moveTo(x+i*s*.17-s*.4,y+s*.4);c.lineTo(x+i*s*.17+s*.4,y-s*.4);c.stroke()}c.restore()}
+    c.lineWidth=Math.max(1.5,s*.05);c.strokeStyle=p.l;c.stroke(sh);
+    starPath(c,x,y-s*.12,s*.17);c.fillStyle=flash?p.m:'#fff';c.fill();
+  }else{
+    c.strokeStyle='#8a8f96';c.lineWidth=s*.09;c.lineCap='round';
+    c.beginPath();c.moveTo(x-s*.28,y-s*.32);c.lineTo(x+s*.28,y+s*.14);c.moveTo(x+s*.28,y-s*.32);c.lineTo(x-s*.28,y+s*.14);c.stroke();
+  }
+  // 血条和数字
+  const bw=s*.84,bh=s*.13,bx=x-bw/2,by=y+s*.33;
+  c.fillStyle='#000';c.fillRect(bx-1,by-1,bw+2,bh+2);c.fillStyle='#39414d';c.fillRect(bx,by,bw,bh);
+  c.fillStyle=hp>0?p.l:BAD;c.fillRect(bx,by,bw*clamp(hp/maxhp,0,1),bh);
+  c.restore();
+}
+
+// 坦克。三种车型外形不同：快速型尖头窄车身加三角炮塔，火力型圆炮塔双炮管，装甲型宽车身方炮塔粗炮管。
+// 两方除颜色外：0 号方炮塔是浅色实心的，1 号方炮塔是深色空心的、车身有斜纹。
+function drawTank(c,x,y,s,type,seat,dir,o){
+  o=o||{};const p=PAL[seat];
+  c.save();c.translate(x,y);c.rotate(ANG[dir]);c.scale(s,s);c.globalAlpha*=o.alpha==null?1:o.alpha;
+  const fl=o.flash,dead=o.dead,ghost=o.ghost;
+  const col=v=>fl?'#fff':dead?'#4a4d52':v;
+  const W=type==='armor'?.46:type==='fast'?.35:.41,tw=type==='armor'?.15:.12,L=type==='fast'?.37:type==='armor'?.42:.39;
+  c.lineJoin='round';
+  if(ghost){c.strokeStyle=p.l;c.lineWidth=.035;c.setLineDash([.07,.05])}
+  const R=(a,b,w,h,fill)=>{if(ghost){c.strokeRect(a,b,w,h)}else{c.fillStyle=fill;c.fillRect(a,b,w,h)}};
+  // 履带
+  for(const sx of[-1,1]){const tx=sx>0?W-tw:-W;R(tx,-L,tw,2*L,col(p.d));
+    if(!ghost){c.fillStyle=fl?'#ddd':'#00000088';const ph=((o.tread||0)%1+1)%1*.1;for(let yy=-L+ph;yy<L-.02;yy+=.1)c.fillRect(tx,yy,tw,.035)}}
+  // 车身
+  const hull=new Path2D();
+  if(type==='fast'){hull.moveTo(-.21,.33);hull.lineTo(-.21,-.12);hull.lineTo(0,-.37);hull.lineTo(.21,-.12);hull.lineTo(.21,.33)}
+  else if(type==='fire'){hull.rect(-.27,-.33,.54,.67)}
+  else{hull.rect(-.33,-.40,.66,.80)}
+  hull.closePath();
+  if(ghost)c.stroke(hull);else{c.fillStyle=col(p.m);c.fill(hull);
+    if(seat===1&&!fl&&!dead){c.save();c.clip(hull);c.strokeStyle=p.d;c.lineWidth=.06;for(let i=-3;i<4;i++){c.beginPath();c.moveTo(i*.2-.4,.4);c.lineTo(i*.2+.4,-.4);c.stroke()}c.restore()}
+    c.lineWidth=.03;c.strokeStyle=fl?'#fff':dead?'#2a2c30':p.k;c.stroke(hull);
+    if(type==='armor'){c.fillStyle=col(p.l);c.fillRect(-.33,-.40,.66,.07);c.fillRect(-.33,.33,.66,.07)}}
+  // 炮管
+  const bc=col(seat?p.l:'#fff3dc');
+  if(type==='fast')R(-.03,-.49,.06,.42,bc);
+  else if(type==='fire'){R(-.125,-.49,.07,.5,bc);R(.055,-.49,.07,.5,bc)}
+  else R(-.06,-.49,.12,.42,bc);
+  // 炮塔
+  c.beginPath();
+  if(type==='fast'){c.moveTo(0,-.14);c.lineTo(.13,.13);c.lineTo(-.13,.13);c.closePath()}
+  else if(type==='fire')c.arc(0,.04,.17,0,7);
+  else c.rect(-.2,-.15,.4,.4);
+  if(ghost)c.stroke();else{c.fillStyle=fl?'#fff':dead?'#333':seat?p.k:p.l;c.fill();c.lineWidth=seat?.05:.03;c.strokeStyle=fl?'#fff':dead?'#222':seat?p.l:p.k;c.stroke()}
+  c.restore();
+}
+// 坦克头顶和脚下的小标记：血量格、等级星、子弹格（实心 = 还能打，空心 = 在飞；红色 = 装填中）
+function drawHud(c,x,y,s,h){
+  c.save();
+  const n=Math.max(h.maxhp,1),pw=Math.min(s*.15,s*.8/n),ph=s*.085,gap=s*.025,tw=n*pw+(n-1)*gap,top=y-s*.5+s*.015;
+  c.fillStyle='#000c';c.fillRect(x-tw/2-2,top-1,tw+4,ph+3);
+  for(let i=0;i<n;i++){const bx=x-tw/2+i*(pw+gap);
+    if(i<h.hp){c.fillStyle='#62d08a';c.fillRect(bx,top,pw,ph)}else{c.strokeStyle='#62d08a';c.lineWidth=1;c.strokeRect(bx+.5,top+.5,pw-1,ph-1)}}
+  if(h.level>0){const r=s*.1;c.fillStyle='#000c';c.fillRect(x-s*.5,y+s*.5-r*2.2,h.level*r*2.1+2,r*2.2);
+    for(let i=0;i<h.level;i++){starPath(c,x-s*.5+r*1.05+i*r*2.1,y+s*.5-r*1.1,r);c.fillStyle=GOLD;c.fill()}}
+  if(h.cap>0){const r=s*.05,w=h.cap*r*2.6;c.fillStyle='#000c';c.fillRect(x+s*.5-w-2,y+s*.5-r*2.8,w+2,r*2.8);
+    for(let i=0;i<h.cap;i++){const bx=x+s*.5-r*1.4-i*r*2.6,by=y+s*.5-r*1.4;c.beginPath();c.arc(bx,by,r,0,7);
+      const ready=i<h.cap-h.out;
+      if(h.reload){c.strokeStyle=BAD;c.lineWidth=Math.max(1,s*.025);c.stroke();c.beginPath();c.moveTo(bx-r,by+r);c.lineTo(bx+r,by-r);c.stroke()}
+      else if(ready){c.fillStyle='#fff';c.fill()}else{c.strokeStyle='#fff';c.lineWidth=Math.max(1,s*.022);c.stroke()}}}
+  c.restore();
+}
+// 子弹：0 号方是圆头弹，1 号方是菱形弹；能破钢的子弹外面多一圈白环
+function drawBullet(c,x,y,s,dir,owner,steel,trail,alpha){
+  const seat=seatOf(owner),p=PAL[seat],d=DV[dir];
+  c.save();c.globalAlpha*=alpha==null?1:alpha;
+  if(trail>0){const gr=c.createLinearGradient(x,y,x-d[0]*trail*s,y-d[1]*trail*s);gr.addColorStop(0,p.l+'cc');gr.addColorStop(1,p.l+'00');
+    c.strokeStyle=gr;c.lineWidth=s*.13;c.lineCap='butt';c.beginPath();c.moveTo(x,y);c.lineTo(x-d[0]*trail*s,y-d[1]*trail*s);c.stroke()}
+  c.translate(x,y);c.rotate(ANG[dir]);c.scale(s,s);
+  if(steel){c.strokeStyle='#fff';c.lineWidth=.04;c.beginPath();c.arc(0,0,.26,0,7);c.stroke()}
+  c.beginPath();
+  if(seat===0){c.moveTo(-.095,.17);c.lineTo(-.095,-.08);c.arc(0,-.08,.095,Math.PI,0);c.lineTo(.095,.17)}
+  else{c.moveTo(0,-.23);c.lineTo(.12,0);c.lineTo(0,.2);c.lineTo(-.12,0)}
+  c.closePath();c.fillStyle='#fff';c.fill();c.lineWidth=.055;c.strokeStyle=p.m;c.stroke();
+  c.restore();
+}
+function label(c,text,x,y,size,color,alpha,stroke){
+  c.save();c.globalAlpha*=alpha==null?1:alpha;c.font=`700 ${size}px ${FONT}`;c.textAlign='center';c.textBaseline='middle';
+  c.lineWidth=Math.max(2,size*.22);c.strokeStyle=stroke||'#000d';c.lineJoin='round';c.strokeText(text,x,y);c.fillStyle=color;c.fillText(text,x,y);c.restore();
+}
+const rnd=(i,j)=>{const v=Math.sin(i*127.1+j*311.7)*43758.5453;return v-Math.floor(v)};   // 固定的"随机"，同一处每次画出来一样
+
+// ====================================================================
+// 特效：每个特效是 (类型, 位置, 开始时刻)，画成它的"年龄"的函数，所以拖到哪里都能直接画出来
+// ====================================================================
+function drawFx(e,age,S){
+  if(age<0)return;
+  const s=CS,x=cxOf(e.x),y=cyOf(e.y);
+  g.save();
+  switch(e.type){
+  case 'muzzle':{if(age>.22)break;const u=age/.22,d=DV[e.dir],mx=x+d[0]*s*.55,my=y+d[1]*s*.55;
+    g.translate(mx,my);g.rotate(ANG[e.dir]);g.globalAlpha=1-u;
+    g.fillStyle='#fff7c0';g.beginPath();const r=s*(.18+.2*u);
+    for(let k=0;k<8;k++){const a=k*Math.PI/4,rr=k%2?r*.45:r*(k===0?1.7:1);g.lineTo(Math.sin(a)*rr,-Math.cos(a)*rr)}g.closePath();g.fill();
+    g.strokeStyle='#ff9d2e';g.lineWidth=s*.04;g.stroke();break}
+  case 'hit':{if(age<.4){const u=age/.4;g.globalAlpha=1-u;g.strokeStyle='#fff';g.lineWidth=s*.07;g.lineCap='round';
+      for(let k=0;k<8;k++){const a=k*Math.PI/4+.3;g.beginPath();g.moveTo(x+Math.cos(a)*s*(.12+.3*u),y+Math.sin(a)*s*(.12+.3*u));g.lineTo(x+Math.cos(a)*s*(.26+.42*u),y+Math.sin(a)*s*(.26+.42*u));g.stroke()}
+      g.strokeStyle=BAD;g.lineWidth=s*.06;g.beginPath();g.arc(x,y,s*(.2+.4*u),0,7);g.stroke()}
+    if(age<.75){const u=age/.75;label(g,'-1',x+s*.32,y-s*(.3+.5*u),s*.42,BAD,1-u*u)}break}
+  case 'ding':{if(age>.28)break;const u=age/.28,d=DV[e.dir],ix=x-d[0]*s*.5,iy=y-d[1]*s*.5;g.globalAlpha=1-u;g.strokeStyle='#e8eef5';g.lineWidth=s*.045;g.lineCap='round';
+    for(let k=-2;k<=2;k++){const a=Math.atan2(-d[1],-d[0])+k*.5;g.beginPath();g.moveTo(ix+Math.cos(a)*s*.08,iy+Math.sin(a)*s*.08);g.lineTo(ix+Math.cos(a)*s*(.14+.3*u),iy+Math.sin(a)*s*(.14+.3*u));g.stroke()}break}
+  case 'out':{if(age>.2)break;const d=DV[e.dir];g.globalAlpha=1-age/.2;g.fillStyle='#fff';g.beginPath();g.arc(x-d[0]*s*.5,y-d[1]*s*.5,s*.08,0,7);g.fill();break}
+  case 'basehit':{if(age<.5){const u=age/.5;g.globalAlpha=1-u;g.strokeStyle=BAD;g.lineWidth=s*.1;g.strokeRect(x-s*(.5+.25*u),y-s*(.5+.25*u),s*(1+.5*u),s*(1+.5*u));
+      g.strokeStyle='#fff';g.lineWidth=s*.05;g.strokeRect(x-s*(.5+.1*u),y-s*(.5+.1*u),s*(1+.2*u),s*(1+.2*u))}
+    if(e.dmg!==false&&age<.9){const u=age/.9,up=e.y<D.size/2?1:-1;label(g,'基地 -1',x,y+up*s*(.95+.35*u),s*.4,BAD,1-u*u)}break}
+  case 'debris':{if(age>.5)break;const u=age/.5,cols=e.kind==='brick'?['#c9713f','#a4502a','#7d3a1c']:['#e3e8ee','#aab3be','#727c88'];
+    if(u<.3){g.globalAlpha=1-u/.3;g.fillStyle='#fff';g.fillRect(x-s/2,y-s/2,s,s)}
+    g.globalAlpha=1-u*u;
+    for(let k=0;k<10;k++){const a=rnd(e.x*17+k,e.y*31)*6.283,r=s*(.12+(.35+.5*rnd(k,e.x+e.y))*u),sz=s*(.1+.09*rnd(k,7));
+      g.fillStyle=cols[k%3];g.fillRect(x+Math.cos(a)*r-sz/2,y+Math.sin(a)*r-sz/2+s*.25*u*u,sz,sz)}break}
+  case 'cancel':{if(age>.4)break;const u=age/.4;g.globalAlpha=1-u;g.strokeStyle='#fff';g.lineWidth=s*.07;g.lineCap='round';const r=s*(.1+.18*u);
+    g.beginPath();g.moveTo(x-r,y-r);g.lineTo(x+r,y+r);g.moveTo(x+r,y-r);g.lineTo(x-r,y+r);g.stroke();
+    g.strokeStyle='#bfe9ff';g.lineWidth=s*.04;g.beginPath();g.arc(x,y,s*(.12+.38*u),0,7);g.stroke();break}
+  case 'death':{const dur=.95;if(age<dur){const u=age/dur;
+      for(const[r0,c0,d0]of[[.62,'#ff7a1a',0],[.46,'#ffd24a',.06],[.28,'#fff',.12]]){const v=clamp((u-d0)/.55,0,1);if(v<=0||v>=1)continue;
+        g.globalAlpha=1-v*v;g.fillStyle=c0;g.beginPath();g.arc(x,y,s*r0*(.35+.9*v),0,7);g.fill()}
+      g.globalAlpha=clamp(1.2-u*1.3,0,1);g.strokeStyle='#ffd24a';g.lineWidth=s*.07;g.lineCap='round';
+      for(let k=0;k<10;k++){const a=k*.628+.2,r1=s*(.3+.75*u),r2=s*(.45+1.0*u);g.beginPath();g.moveTo(x+Math.cos(a)*r1,y+Math.sin(a)*r1);g.lineTo(x+Math.cos(a)*r2,y+Math.sin(a)*r2);g.stroke()}
+      g.globalAlpha=clamp((u-.25)/.3,0,1)*(1-u)*.9;g.fillStyle='#555';for(let k=0;k<5;k++){const a=k*1.257;g.beginPath();g.arc(x+Math.cos(a)*s*.3*u,y+Math.sin(a)*s*.3*u-s*.3*u,s*.2,0,7);g.fill()}
+      g.globalAlpha=1;label(g,e.by>=0?'压出生点 · 炸毁':'击毁',x,y-s*(.62+.3*u),s*.38,'#fff',clamp(2.4-u*2.4,0,1),PAL[1-seatOf(e.tank)].d)}
+    break}
+  case 'respawn':{if(age>.7)break;const u=age/.7,p=PAL[seatOf(e.tank)];g.globalAlpha=1-u;g.strokeStyle=p.l;g.lineWidth=s*.06;
+    for(const k of[0,.33,.66]){const v=(u+k)%1;g.beginPath();g.arc(x,y,s*(.95-.6*v),0,7);g.stroke()}
+    label(g,'复活',x,y-s*.7,s*.36,p.l,1-u);break}
+  case 'star':{if(age>.9)break;const u=age/.9;g.globalAlpha=1-u;g.strokeStyle=GOLD;g.lineWidth=s*.08;g.beginPath();g.arc(x,y,s*(.3+.6*u),0,7);g.stroke();
+    for(let k=0;k<5;k++){const a=k*1.257-1.57+u;drawStar(g,x+Math.cos(a)*s*(.35+.6*u),y+Math.sin(a)*s*(.35+.6*u),s*.11,1-u)}
+    g.globalAlpha=1;label(g,'升级 Lv'+e.level+(e.level>=2&&D.params.level2_steel!==0?' · 破钢':''),x,y-s*(.7+.35*u),s*.4,GOLD,clamp(2.2-u*2.2,0,1));break}
+  case 'supply':{if(age>.6)break;const u=age/.6;g.globalAlpha=1-u;g.strokeStyle=GOLD;g.lineWidth=s*.06;g.beginPath();g.arc(x,y,s*(.9-.55*u),0,7);g.stroke();break}
+  case 'cleared':{if(age>.3)break;g.globalAlpha=1-age/.3;g.fillStyle='#ccc';g.beginPath();g.arc(x,y,s*.2,0,7);g.fill();break}
+  }
+  g.restore();
+}
+// 停在某一回合时留在画面上的标记：这一回合子弹飞过的路线、打掉的墙、被毁的位置、没走成的方向……
+function drawMarks(k,alpha){
+  if(k<1||alpha<=0)return;
+  const S=simulate(k),s=CS;
+  g.save();g.globalAlpha=alpha;
+  for(const b of S.bullets){const d=DV[b.dir],len=Math.min(b.endS,2),p=PAL[seatOf(b.owner)];
+    const x0=cxOf(b.x0),y0=cyOf(b.y0),x1=x0+d[0]*len*s,y1=y0+d[1]*len*s;
+    g.strokeStyle=p.l;g.globalAlpha=alpha*.38;g.lineWidth=s*.07;g.setLineDash([s*.12,s*.1]);g.beginPath();g.moveTo(x0,y0);g.lineTo(x1,y1);g.stroke();g.setLineDash([]);
+    if(b.end){g.globalAlpha=alpha*.8;g.fillStyle=p.l;g.beginPath();g.arc(x1,y1,s*.06,0,7);g.fill()}}
+  g.globalAlpha=alpha;
+  for(const w of S.walls){const x=px(w.x),y=py(w.y);g.strokeStyle=w.kind==='brick'?'#c9713f':'#e3e8ee';g.lineWidth=Math.max(1.5,s*.045);g.setLineDash([s*.14,s*.1]);
+    g.strokeRect(x+s*.08,y+s*.08,s*.84,s*.84);g.setLineDash([]);
+    g.fillStyle=w.kind==='brick'?'#a4502a':'#aab3be';for(let i=0;i<5;i++)g.fillRect(x+s*(.2+.6*rnd(i,w.x)),y+s*(.2+.6*rnd(w.y,i)),s*.08,s*.08)}
+  for(const e of S.fx){const x=cxOf(e.x),y=cyOf(e.y);
+    if(e.type==='death'){const p=PAL[seatOf(e.tank)];
+      g.fillStyle='#000a';g.beginPath();g.arc(x,y,s*.4,0,7);g.fill();
+      g.strokeStyle=p.m;g.lineWidth=s*.11;g.lineCap='round';g.beginPath();g.moveTo(x-s*.24,y-s*.24);g.lineTo(x+s*.24,y+s*.24);g.moveTo(x+s*.24,y-s*.24);g.lineTo(x-s*.24,y+s*.24);g.stroke();
+      g.strokeStyle='#fff';g.lineWidth=s*.035;g.beginPath();g.moveTo(x-s*.24,y-s*.24);g.lineTo(x+s*.24,y+s*.24);g.moveTo(x+s*.24,y-s*.24);g.lineTo(x-s*.24,y+s*.24);g.stroke()}
+    else if(e.type==='cancel'){g.strokeStyle='#fff';g.lineWidth=s*.05;g.lineCap='round';const r=s*.11;g.beginPath();g.moveTo(x-r,y-r);g.lineTo(x+r,y+r);g.moveTo(x+r,y-r);g.lineTo(x-r,y+r);g.stroke();
+      g.beginPath();g.arc(x,y,s*.2,0,7);g.lineWidth=s*.03;g.stroke()}
+    else if(e.type==='ding'){const d=DV[e.dir];g.fillStyle='#e8eef5';g.beginPath();g.arc(x-d[0]*s*.5,y-d[1]*s*.5,s*.07,0,7);g.fill()}
+  }
+  // 没走成：朝想去的方向画一道红杠
+  S.T.forEach(t=>t.bump.forEach((d,si)=>{if(!d)return;const p=t.pos[si+1],v=DV[d],x=cxOf(p[0])+v[0]*s*.5,y=cyOf(p[1])+v[1]*s*.5;
+    g.strokeStyle=BAD;g.lineWidth=s*.08;g.lineCap='round';g.beginPath();g.moveTo(x-v[1]*s*.22,y-v[0]*s*.22);g.lineTo(x+v[1]*s*.22,y+v[0]*s*.22);g.stroke()}));
+  g.restore();
+}
+// 画在坦克上面的静态标记：被打中的车外面一圈红色短线，刚复活、刚升级的车外面一圈环
+function drawMarksTop(k,alpha){
+  if(k<1||alpha<=0)return;
+  const S=simulate(k),s=CS,fr=F[k];
+  g.save();g.globalAlpha=alpha;
+  for(const e of S.fx){
+    if(e.type==='hit'){const t=fr.tanks[e.tank];if(!t.alive)continue;const x=cxOf(t.x),y=cyOf(t.y);g.strokeStyle=BAD;g.lineWidth=s*.06;g.lineCap='round';
+      for(let k2=0;k2<8;k2++){const a=k2*Math.PI/4+.39;g.beginPath();g.moveTo(x+Math.cos(a)*s*.5,y+Math.sin(a)*s*.5);g.lineTo(x+Math.cos(a)*s*.62,y+Math.sin(a)*s*.62);g.stroke()}}
+    else if(e.type==='basehit'){const x=px(e.x),y=py(e.y);g.strokeStyle=BAD;g.lineWidth=s*.07;g.strokeRect(x-s*.03,y-s*.03,s*1.06,s*1.06)}
+    else if(e.type==='respawn'){const x=cxOf(e.x),y=cyOf(e.y);g.strokeStyle=PAL[seatOf(e.tank)].l;g.lineWidth=s*.04;g.setLineDash([s*.1,s*.08]);g.beginPath();g.arc(x,y,s*.6,0,7);g.stroke();g.setLineDash([])}
+    else if(e.type==='star'){const t=fr.tanks[e.tank];if(!t.alive)continue;g.strokeStyle=GOLD;g.lineWidth=s*.05;g.beginPath();g.arc(cxOf(t.x),cyOf(t.y),s*.6,0,7);g.stroke()}
+  }
+  g.restore();
+}
+
+// ====================================================================
+// 画一帧。k = 帧号；p = 正在播第 k+1 回合的进度（0 表示停在第 k 帧）；tl = 停下后过了多久
+// ====================================================================
+function fitCanvas(c){const r=c.getBoundingClientRect(),dpr=window.devicePixelRatio||1,w=Math.max(1,Math.round(r.width*dpr)),h=Math.max(1,Math.round(r.height*dpr));
+  if(c.width!==w||c.height!==h){c.width=w;c.height=h}return dpr}
+function drawBoard(k,p,tl){
+  fitCanvas(cv);
+  const W=cv.width,n=D.size,P=D.params;
+  const margin=showCoords?Math.round(W*.032):Math.round(W*.012);
+  CS=Math.floor((W-2*margin)/n);OX=Math.round((W-CS*n)/2);OY=OX;
+  const anim=p>0&&k<N,A=F[k],S=anim?simulate(k+1):null,s=CS;
+  g.setTransform(1,0,0,1,0,0);g.fillStyle='#262b33';g.fillRect(0,0,W,W);
+  g.fillStyle='#4a515c';g.fillRect(OX-4,OY-4,CS*n+8,CS*n+8);
+  const map=anim?(p<.275?A.map:p<.775?S.maps[0]:S.maps[1]):A.map;
+  g.drawImage(terrain(map),OX,OY);
+  // 坐标
+  if(showCoords){g.font=`${Math.round(margin*.5)}px ${NUMFONT}`;g.fillStyle='#8a94a1';g.textAlign='center';g.textBaseline='middle';
+    for(let i=0;i<n;i++){g.fillText(i,cxOf(i),OY/2-1);g.fillText(i,cxOf(i),OY+CS*n+OY/2+1);g.fillText(i,OX/2-1,cyOf(i));g.fillText(i,OX+CS*n+OX/2+1,cyOf(i))}}
+  // 地上的记号：出生点、补给点
+  D.spawns.forEach((sp,i)=>drawSpawn(g,cxOf(sp[0]),cyOf(sp[1]),s,seatOf(i)));
+  const turnNow=A.turn,ns=nextSupply(turnNow);
+  const hasStar=(x,y)=>A.stars.some(q=>q[0]===x&&q[1]===y);
+  const occupied=(x,y)=>A.tanks.some(t=>t.alive&&t.x===x&&t.y===y);
+  for(const[x,y]of D.supply){drawSupply(g,cxOf(x),cyOf(y),s);
+    if(!hasStar(x,y)&&ns!=null&&!(anim?false:occupied(x,y)))label(g,String(ns-turnNow),cxOf(x),cyOf(y),s*.34,'#b89a3a',anim&&occupied(x,y)?0:.95,'#0009')}
+  // 停着的时候：这一回合留下的痕迹
+  const markA=anim?0:clamp((tl-.35)/.4,0,1);
+  if(!anim)drawMarks(k,markA);
+  // 星星
+  const fresh=!anim&&k>=1?simulate(k).fx.filter(e=>e.type==='supply'):[];
+  for(const[x,y]of A.stars){const born=fresh.some(e=>e.x===x&&e.y===y)?clamp(tl/.35,0,1):1;
+    drawStar(g,cxOf(x),cyOf(y),s*.3*(born<1?.4+.6*born*(2-born):1),born)}
+  // 基地
+  const baseHp=[0,1].map(q=>anim?Math.max(0,A.base_hp[q]-S.baseT[q].filter(t=>t<=p).length):A.base_hp[q]);
+  D.bases.forEach((b,q)=>{const flash=anim&&S.baseT[q].some(t=>p>=t&&p-t<.09);
+    drawBase(g,cxOf(b[0]),cyOf(b[1]),s,q,baseHp[q],P.base_hp||12,flash);
+    label(g,String(baseHp[q]),cxOf(b[0])+s*.0,cyOf(b[1])+s*.4,s*.26,'#fff',1)});
+  // 不在场的车：出生点上画虚影和复活倒计时
+  A.tanks.forEach((t,i)=>{if(t.alive)return;const sp=D.spawns[i],x=cxOf(sp[0]),y=cyOf(sp[1]);
+    if(occupied(sp[0],sp[1])){label(g,t.respawn_in>0?String(t.respawn_in):'…',x+s*.34,y-s*.34,s*.3,PAL[t.seat].l,1);return}
+    drawTank(g,x,y,s,t.type,t.seat,t.seat?'D':'U',{ghost:true,alpha:.55});
+    label(g,t.respawn_in>0?String(t.respawn_in):'等',x,y,s*.5,'#fff',1,PAL[t.seat].d)});
+  // 坦克
+  const sub=p*2,si=Math.min(1,Math.floor(sub)),sf=sub-si;
+  const prevFx=k>=1?simulate(k).fx:[];
+  A.tanks.forEach((t,i)=>{
+    if(!t.alive)return;
+    let x=t.x,y=t.y,dir=facing[k][i],hp=t.hp,flash=false,alpha=1,tread=0;
+    if(anim){const st=S.T[i],a=st.pos[si],b=st.pos[si+1];x=a[0]+(b[0]-a[0])*sf;y=a[1]+(b[1]-a[1])*sf;
+      const bd=st.bump[si];if(bd){const off=.13*Math.sin(Math.PI*Math.min(1,sf*1.7));x+=DV[bd][0]*off;y+=DV[bd][1]*off}
+      if(st.fire)dir=st.fire;else if(st.mv[si])dir=st.mv[si];else if(si===1&&st.mv[0])dir=st.mv[0];
+      hp=t.hp-st.hitT.filter(q=>q<=p).length;flash=st.hitT.some(q=>p>=q&&p-q<.07);tread=(x+y)*4}
+    else if(prevFx.some(e=>e.type==='respawn'&&e.tank===i))alpha=clamp(tl/.3,0,1);
+    const X=cxOf(x),Y=cyOf(y);
+    drawTank(g,X,Y,s,t.type,t.seat,dir,{flash,dead:hp<=0,alpha,tread});
+    if(alpha>.5)drawHud(g,X,Y,s,{hp:Math.max(0,hp),maxhp:maxHp(t),level:t.level,cap:t.bullet_cap,out:Math.min(t.bullet_cap,t.bullets_out+(anim&&S.T[i].fire?1:0)),reload:!anim&&t.reload_left>0});
+  });
+  if(!anim)drawMarksTop(k,markA);
+  // 子弹
+  if(anim){for(const b of S.bullets){if(sub>=b.endS)continue;const d=DV[b.dir];
+      if(b.fresh&&sub<.3)continue;      // 刚出膛的头一小段藏在车身下面
+      drawBullet(g,cxOf(b.x0+d[0]*sub),cyOf(b.y0+d[1]*sub),s,b.dir,b.owner,b.steel,b.fresh?Math.min(sub-.3,1.1):1.1)}}
+  else for(const b of A.bullets)drawBullet(g,cxOf(b.x),cyOf(b.y),s,b.dir,b.owner,b.steel,1.1);
+  // 特效
+  if(anim){for(const e of prevFx)drawFx(e,1+p-e.t);for(const e of S.fx)drawFx(e,p-e.t)}
+  else if(tl<TAIL_MAX)for(const e of prevFx)drawFx(e,1+tl-e.t);
+  return baseHp;
+}
+
+// ====================================================================
+// 侧栏
+// ====================================================================
+const side={};
+function miniTank(canvas,type,seat){const dpr=window.devicePixelRatio||1,w=Math.round(52*dpr);canvas.width=canvas.height=w;const c=canvas.getContext('2d');drawTank(c,w/2,w/2,w*.86,type,seat,'U')}
+function buildStatic(){
+  const P=D.params,unit=D.budget&&D.budget.kind==='cpu'?'CPU 毫秒':'毫秒';
+  for(const seat of[0,1]){
+    const el=$('team'+seat),hpn=P.base_hp||12;
+    el.innerHTML=`<div class="thead"><span class="mark"></span><span class="tname">${esc(D.names[seat])}</span><span class="tres" data-k="res"></span><span class="tflt" data-k="flt"></span><span class="tseat">${seat} 号位 · ${seat?'上方':'下方'}</span></div>
+      <div class="baserow"><span class="lbl">基地</span><div class="hpbar" data-k="hpbar">${'<i></i>'.repeat(hpn)}</div><span class="hpnum"><span data-k="hp"></span><small>/${hpn}</small></span></div>
+      <div class="stats"><div><b data-k="kills"></b><span>击毁</span></div><div><b data-k="stars"></b><span>吃星</span></div><div><b data-k="dmg"></b><span>打中对方基地</span></div><div data-k="msbox"><b data-k="ms"></b><span>本回合思考</span></div></div>
+      ${[0,1,2].map(j=>{const i=seat*3+j;return `<div class="trow" data-k="row${i}"><canvas data-k="cv${i}"></canvas>
+        <div><div class="tl1"><b>${TYPE_CN[typeOf(i)]}</b><span class="pips" data-k="pips${i}"></span><span class="lv" data-k="lv${i}"></span><span class="pos" data-k="pos${i}"></span></div>
+        <div class="tl2" data-k="st${i}"></div></div><div class="ord" data-k="ord${i}"></div></div>`}).join('')}`;
+    el.querySelectorAll('[data-k]').forEach(n=>{side[n.dataset.k+(/\d$/.test(n.dataset.k)?'':'_'+seat)]={el:n,v:null}});
+    for(let j=0;j<3;j++)miniTank(side['cv'+(seat*3+j)].el,typeOf(seat*3+j),seat);
+  }
+  const res=D.result||{};
+  const style=D.style==null?'':` · 风格 ${STYLE_CN[D.style]||D.style}`;
+  $('meta').innerHTML=`<b>${esc(D.names[0])}</b> 对 <b>${esc(D.names[1])}</b> · 种子 ${esc(D.seed)}${style} · ${D.size}×${D.size} · 共 ${N} 回合 · ${esc(D.engine||'')}`
+    +(D.consistent===false?'<span class="warnchip" title="重新结算出的终局和回放里记的不一样，这份回放可能不是用当前的引擎打的">回放与引擎不一致</span>':'');
+  document.title=`${D.names[0]} 对 ${D.names[1]} · 种子 ${D.seed} · 坦克大战回放`;
+  $('thinkunit').textContent=unit;
+  $('tllegend').innerHTML=`<span class="tk s1"><i></i>${esc(D.names[1])}</span>（上排）<br><b>✕</b>击毁 <b>▮</b>打中基地 <b class="c-gold">★</b>吃星 <b class="c-bad">!</b>故障<br><span class="tk s0"><i></i>${esc(D.names[0])}</span>（下排）`;
+  drawLegend();
+}
+function put(key,html){const o=side[key];if(o&&o.v!==html){o.v=html;o.el.innerHTML=html}}
+function cls(key,name,on){const o=side[key];if(o)o.el.classList.toggle(name,!!on)}
+function orderHtml(i,turnFrame,prevFrame){   // 第 i 辆车在这一回合的命令
+  if(!turnFrame||!turnFrame.orders)return['—',true];
+  const seat=seatOf(i),o=turnFrame.orders[seat][i%3]||'S',was=prevFrame.tanks[i].alive,ev=turnFrame.events;
+  if(!was)return[`<small>不在场</small>`,true];
+  if(o==='S')return['不动',true];
+  if(o[0]==='F'){const ok=ev.some(e=>e.type==='fire'&&e.tank===i);return[`开炮 <span class="ar">${ARROW[o[1]]}</span>`+(ok?'':' <span class="x" title="装填中或子弹已达上限，这一炮没有打出去">未打出</span>'),false]}
+  let h='移动 ';
+  for(let s=0;s<o.length;s++){const blocked=ev.some(e=>e.type==='blocked'&&e.tank===i&&e.sub===s+1);h+=`<span class="ar">${ARROW[o[s]]}</span>`+(blocked?'<span class="x" title="这一步没走成">✕</span>':'')}
+  return[h,false];
+}
+function updateSide(baseHp){
+  const anim=prog>0&&cur<N,A=F[cur],show=anim?cur+1:cur,B=F[show],S=anim?simulate(cur+1):null,P=D.params,res=D.result||{};
+  const total=N,ended=cur===N&&!anim;
+  for(const seat of[0,1]){
+    const hp=baseHp[seat],hpn=P.base_hp||12;
+    put('hp_'+seat,String(hp));
+    const key='hpbar_'+seat,o=side[key],sig=hp+'/'+(anim&&S.baseT[seat].some(t=>prog>=t&&prog-t<.12)?1:0);
+    if(o.v!==sig){o.v=sig;[...o.el.children].forEach((n,i)=>{n.className=i<hp?'on':(i<A.base_hp[seat]&&sig.endsWith('1')?'hit':'')})}
+    put('kills_'+seat,String(A.kills[seat]));put('stars_'+seat,String(A.stars_eaten[seat]));put('dmg_'+seat,String(A.base_dmg?A.base_dmg[seat]:'–'));
+    const ms=B.used_ms?B.used_ms[seat]:null,bud=budgetOf(show);
+    put('ms_'+seat,fmtMs(ms));cls('msbox_'+seat,'near',ms!=null&&ms>=bud*.8&&ms<=bud);cls('msbox_'+seat,'over',ms!=null&&ms>bud);
+    put('flt_'+seat,(B.faults||[]).filter(f=>f.seat===seat).map(f=>'本回合'+esc(faultKind(f.kind))+'，三辆都不动')[0]||'');
+    let r='',rc='';
+    if(ended){if(res.winner===seat){r='胜';rc='win'}else if(res.winner<0||res.winner==null){r='平';rc='draw'}else{r='负';rc='lose'}}
+    put('res_'+seat,r);const ro=side['res_'+seat].el;if(ro.dataset.c!==rc){ro.dataset.c=rc;ro.className='tres '+rc;ro.style.display=r?'':'none'}
+    for(let j=0;j<3;j++){
+      const i=seat*3+j,t=A.tanks[i];
+      const hpNow=anim?Math.max(0,t.hp-S.T[i].hitT.filter(q=>q<=prog).length):t.hp,mh=maxHp(t);
+      cls('row'+i,'dead',!t.alive);
+      put('pips'+i,t.alive?Array.from({length:mh},(_,q)=>`<i class="${q<hpNow?'on':''}"></i>`).join(''):'');
+      put('lv'+i,t.alive?(t.level>0?'★'.repeat(t.level)+(t.level>=2&&P.level2_steel!==0?' 破钢':''):''):'');
+      put('pos'+i,t.alive?`(${t.x},${t.y})`:'');
+      let st;
+      if(!t.alive)st=`<span class="ded">已被毁</span> · ${t.respawn_in>0?t.respawn_in+' 回合后复活':'等出生点空出来'}`;
+      else{const ready=t.bullet_cap-t.bullets_out;st=`血 ${hpNow}/${mh} · 子弹 ${ready}/${t.bullet_cap}`+(t.reload_left>0?` · <span class="rel">装填中</span>`:t.can_fire?' · 可开炮':' · 子弹都在飞')}
+      put('st'+i,st);
+      const[oh,none]=show>=1?orderHtml(i,B,F[show-1]):['—',true];
+      put('ord'+i,oh);cls('ord'+i,'none',none);
+    }
+  }
+  // 回合信息
+  const tb=anim?`第 ${show} 回合<small> / ${total}</small>`:cur===0?`开局<small> / 共 ${total} 回合</small>`:`第 ${cur} 回合<small> / ${total}</small>`;
+  if(side._tb!==tb){side._tb=tb;$('turnbig').innerHTML=tb}
+  const ph=anim?(prog<.06?0:prog<.5?1:2):(cur>0?3:-1);
+  if(side._ph!==ph){side._ph=ph;[...$('phases').children].forEach((n,i)=>n.classList.toggle('on',i===ph))}
+  const ns=nextSupply(A.turn),sl=ns==null?'不会再出补给了':`下一批补给：<b>${ns-A.turn}</b> 回合后（第 ${ns} 回合末） · 场上星星 <b>${A.stars.length}</b>`;
+  if(side._sl!==sl){side._sl=sl;$('supplyline').innerHTML=sl}
+  const lbl=`${anim?show:cur}<small> / ${total}</small>`;
+  if(side._lbl!==lbl){side._lbl=lbl;$('turnlabel').innerHTML=lbl}
+  if(show!==shownTurn){shownTurn=show;updateEvents(show);updateDebug(show);drawThink()}
+}
+const budgetOf=turn=>D.budget?(turn<=1?D.budget.first_ms:D.budget.turn_ms):Infinity;
+const tk=i=>`<span class="tk s${seatOf(i)}"><i></i>${TYPE_CN[typeOf(i)]}</span>`;
+const sideName=s=>`<span class="tk s${s}"><i></i>${esc(D.names[s])}</span>`;
+function eventHtml(e){
+  switch(e.type){
+    case 'fire':return['➤','',`${tk(e.tank)} 向 ${ARROW[e.dir]} 开炮`];
+    case 'blocked':return['⊘','c-mut',`${tk(e.tank)} 没走成`];
+    case 'cancel':return['✕','c-ink2',`子弹在 (${e.x},${e.y}) ${e.how==='cross'?'对穿':'同格'}对消`];
+    case 'hit':return['✸','c-bad',`${tk(e.tank)} 在 (${e.x},${e.y}) 被 ${tk(e.by)} 打中`+(e.swap?'（迎着子弹走）':'')+(seatOf(e.tank)===seatOf(e.by)?' <span class="c-bad">友军误伤</span>':'')];
+    case 'base_hit':return['▮','c-bad big',`${sideName(e.seat)} 的基地被 ${tk(e.by)} 打中`+(seatOf(e.by)===e.seat?' <span class="c-bad">打了自己的基地</span>':'')];
+    case 'wall':return['▪','c-ink2',`(${e.x},${e.y}) 的${e.kind==='brick'?'砖墙':'钢墙'}被打掉`];
+    case 'death':return['☠','c-bad big',`${tk(e.tank)} 在 (${e.x},${e.y}) 被毁`+(e.by>=0?`（压在出生点上，被 ${tk(e.by)} 复活炸毁）`:'')];
+    case 'respawn':return['↺','',`${tk(e.tank)} 在 (${e.x},${e.y}) 复活`];
+    case 'bullet_cleared':return['·','c-mut',`(${e.x},${e.y}) 上的子弹因 ${tk(e.tank)} 复活而消失`];
+    case 'star':return['★','c-gold big',`${tk(e.tank)} 吃到星星，升到 ${e.level} 级`+(e.level>=2&&D.params.level2_steel!==0?'（能破钢）':'')];
+    case 'supply':return['☆','c-gold',`(${e.x},${e.y}) 出了一颗星星`];
+    case 'base_regen':return['+','',`${sideName(e.seat)} 的基地回 1 血`];
+    default:return['·','c-mut',esc(e.text||e.type)];
+  }
+}
+function updateEvents(turn){
+  const f=F[turn];$('evturn').textContent=turn?`第 ${turn} 回合`:'开局';
+  if(!turn){$('events').innerHTML='<div class="none">开局。0 号位在下方，1 号位在上方。</div>';return}
+  const groups=[['开炮',[]],['小步 1',[]],['小步 2',[]],['回合末',[]]];
+  for(const e of f.events){const gi=e.type==='fire'?0:e.sub===1?1:e.sub===2?2:3;groups[gi][1].push(e)}
+  let h='';
+  for(const[name,list]of groups){if(!list.length)continue;h+=`<div class="grp">${name}</div>`;
+    for(const e of list){const[ic,c,t]=eventHtml(e);h+=`<div class="ev ${c.includes('big')?'big':''}"><span class="ic ${c.replace('big','')}">${ic}</span><span>${t}</span></div>`}}
+  $('events').innerHTML=h||'<div class="none">这一回合没有发生什么。</div>';
+  $('events').scrollTop=0;
+}
+function updateDebug(turn){
+  $('dbgturn').textContent=turn?`第 ${turn} 回合`:'';
+  let h='';
+  const ftext=f=>`回合 ${f.turn} · ${esc(D.names[f.seat])}：${esc(f.detail||faultKind(f.kind))}`;
+  const res=D.result||{},now=faultList.filter(f=>f.turn===turn);
+  for(const f of now)h+=`<div class="fault now" data-turn="${f.turn}">${ftext(f)}</div>`;
+  const lines=stderrByTurn[turn]||[];
+  h+=`<div class="sub">这一回合的调试输出${lines.length?'':'：无'}</div>`;
+  for(const[seat,line]of lines)h+=`<div class="ln"><span class="tk s${seat}"><i></i></span>${esc(line)}</div>`;
+  if(faultList.length||(res.bots||[]).some(b=>b&&b.dead)){h+=`<div class="sub">整局的故障（共 ${faultList.length} 条，点一下跳过去）</div>`;
+    (res.bots||[]).forEach((b,s)=>{if(b&&b.dead)h+=`<div class="fault now" data-turn="${N}">${esc(D.names[s])} 被判负：${esc(b.dead)}</div>`});
+    for(const f of faultList)h+=`<div class="fault ${f.turn===turn?'now':''}" data-turn="${f.turn}">${ftext(f)}</div>`}
+  const total=(D.stderr||[]).reduce((a,l)=>a+(l?l.length:0),0);
+  if(!faultList.length&&!total)h=`<div class="none c-mut">这局没有故障，两边也都没有调试输出。<br>bot 写到标准错误的内容会按回合显示在这里。</div>`;
+  $('debug').innerHTML=h;
+}
+$('debug').addEventListener('click',e=>{const n=e.target.closest('.fault');if(n)seek(clamp(+n.dataset.turn,0,N))});
+
+function drawLegend(){
+  const c=$('legend');if(!c.clientWidth)return;const items=[['砖墙','一炮打掉'],['钢墙','2 级才能打掉'],['水','挡车不挡子弹'],['补给点','定时出星星'],['出生点','复活的位置'],['星星','吃了升一级']];
+  const cssW=c.parentElement.clientWidth-4,fs=parseFloat(getComputedStyle(document.body).fontSize),cols=3,rowH=fs*2.6,dpr=window.devicePixelRatio||1;
+  c.style.height=rowH*2+'px';c.width=Math.round(cssW*dpr);c.height=Math.round(rowH*2*dpr);
+  const x=c.getContext('2d');x.scale(dpr,dpr);
+  items.forEach(([name,note],i)=>{const cx=(i%cols)*cssW/cols+4,cy=Math.floor(i/cols)*rowH+3,s=rowH-8;
+    if(i===0)drawBrick(x,cx,cy,s);else if(i===1)drawSteel(x,cx,cy,s);else if(i===2)drawWater(x,cx,cy,s);
+    else{drawEmpty(x,cx,cy,s);if(i===3)drawSupply(x,cx+s/2,cy+s/2,s);else if(i===4)drawSpawn(x,cx+s/2,cy+s/2,s,1);else drawStar(x,cx+s/2,cy+s/2,s*.34)}
+    x.textAlign='left';x.textBaseline='middle';x.fillStyle='#e9edf3';x.font=`600 ${fs*.88}px ${FONT}`;x.fillText(name,cx+s+7,cy+s*.28);
+    x.fillStyle='#7c8794';x.font=`${fs*.72}px ${FONT}`;x.fillText(note,cx+s+7,cy+s*.74)});
+}
+
+// ====================================================================
+// 思考用量小图：两方各一行，同一把纵轴
+// ====================================================================
+let thinkGeo=null;
+function drawThink(){
+  const c=$('think');if(!D||!c.clientWidth)return;
+  const dpr=fitCanvas(c),x=c.getContext('2d'),W=c.width/dpr,H=c.height/dpr,fs=parseFloat(getComputedStyle(document.body).fontSize);
+  x.setTransform(dpr,0,0,dpr,0,0);x.clearRect(0,0,W,H);
+  const bud=D.budget||{},turnMs=bud.turn_ms||50;
+  const val=(k,s)=>F[k].used_ms&&F[k].used_ms[s]!=null?F[k].used_ms[s]:null;
+  let mx=0;for(let k=2;k<=N;k++)for(const s of[0,1]){const v=val(k,s);if(v!=null&&v>mx)mx=v}
+  const showBud=mx>=turnMs*.4;
+  let ymax;if(showBud)ymax=Math.max(turnMs*1.18,mx*1.06);else{const raw=Math.max(mx*1.25,1e-3),e=Math.pow(10,Math.floor(Math.log10(raw)));ymax=Math.ceil(raw/e)*e}
+  const padL=fs*2.9,padR=6,gap=fs*.9,top=fs*1.25,ph=(H-top*2-gap-fs*1.0)/2,pw=W-padL-padR,step=pw/Math.max(N,1),bw=Math.max(1,Math.min(step-1,step*.72));
+  const shown=prog>0&&cur<N?cur+1:cur;
+  thinkGeo={padL,step,W};
+  [1,0].forEach((seat,row)=>{
+    const y0=top+row*(ph+top+gap),base=y0+ph,p=PAL[seat];
+    // 标题：色块 + 名字（文字用正文色，不用系列色）
+    x.fillStyle=p.m;x.fillRect(padL,y0-fs*.95,fs*.7,fs*.7);if(seat){x.fillStyle='#0d1626';x.fillRect(padL+fs*.18,y0-fs*.77,fs*.34,fs*.34)}
+    x.fillStyle='#b3bcc8';x.font=`${fs*.78}px ${FONT}`;x.textAlign='left';x.textBaseline='middle';
+    const b=(D.result&&D.result.bots||[])[seat]||{};
+    const v1=val(1,seat);
+    x.fillText(`${D.names[seat]}  首回合 ${fmtMs(v1)} / ${bud.first_ms||'?'}，之后最多 ${fmtMs(b.max_ms!=null?b.max_ms:mx)} / ${turnMs}`,padL+fs*1.0,y0-fs*.58);
+    // 轴
+    x.strokeStyle='#2a313c';x.lineWidth=1;x.beginPath();x.moveTo(padL,base+.5);x.lineTo(W-padR,base+.5);x.stroke();
+    x.fillStyle='#7c8794';x.font=`${fs*.68}px ${NUMFONT}`;x.textAlign='right';
+    x.fillText('0',padL-4,base-2);if(!showBud)x.fillText(fmtMs(ymax),padL-4,y0+fs*.3);
+    if(showBud){const yb=base-ph*turnMs/ymax;x.setLineDash([4,3]);x.strokeStyle='#8a94a1';x.beginPath();x.moveTo(padL,yb+.5);x.lineTo(W-padR,yb+.5);x.stroke();x.setLineDash([]);
+      x.fillText(String(turnMs),padL-4,yb)}
+    for(let k=1;k<=N;k++){const v=val(k,seat);if(v==null)continue;const bg=budgetOf(k),ratio=v/bg,near=ratio>=.8&&ratio<=1,over=ratio>1;
+      const h=Math.max(1,Math.min(1,v/ymax)*ph),bx=padL+(k-.5)*step-bw/2;
+      x.fillStyle=over?BAD:near?WARN:p.m;x.fillRect(bx,base-h,bw,h);
+      if(k===1&&v>ymax){x.fillStyle='#0c0e11';x.fillRect(bx-1,base-ph*.55,bw+2,2)}     // 首回合单独的预算，柱子截断
+      if(near||over){const mxx=bx+bw/2,my=y0+2;x.fillStyle=over?BAD:WARN;x.beginPath();x.moveTo(mxx-4,my);x.lineTo(mxx+4,my);x.lineTo(mxx,my+6);x.closePath();
+        if(over)x.fill();else{x.strokeStyle=WARN;x.lineWidth=1.3;x.stroke()}}}
+  });
+  // 当前回合、悬停的回合
+  const line=(k,col)=>{if(k<1)return;const xx=padL+(k-.5)*step;x.strokeStyle=col;x.lineWidth=1;x.beginPath();x.moveTo(xx+.5,top-2);x.lineTo(xx+.5,H-fs*1.0);x.stroke()};
+  if(hoverThink>0)line(hoverThink,'#7c8794');line(shown,'#fff');
+  x.fillStyle='#7c8794';x.font=`${fs*.68}px ${NUMFONT}`;x.textAlign='center';x.textBaseline='alphabetic';
+  const every=N>150?50:N>60?20:N>20?10:5;for(let k=every;k<=N;k+=every)x.fillText(k,padL+(k-.5)*step,H-2);
+  x.textAlign='left';x.fillText('回合',2,H-2);
+  const over=[],near=[];for(let k=1;k<=N;k++)for(const s of[0,1]){const v=val(k,s);if(v==null)continue;const r=v/budgetOf(k);if(r>1)over.push(k);else if(r>=.8)near.push(k)}
+  $('thinknote').innerHTML=(showBud?`虚线 = 每回合预算 ${turnMs}。`:`纵轴顶端 ${fmtMs(ymax)}，离每回合预算 ${turnMs} 还很远。`)
+    +(over.length?` <span class="c-bad">▼ 超出预算 ${over.length} 回合</span>`:'')+(near.length?` <span style="color:var(--warn)">▽ 接近预算（≥80%）${near.length} 回合</span>`:'')
+    +(!over.length&&!near.length?' 没有接近或超出预算的回合。':'')+' 首回合的预算单独算。';
+}
+function thinkTurnAt(ev){const r=$('think').getBoundingClientRect();if(!thinkGeo)return-1;const k=Math.floor((ev.clientX-r.left-thinkGeo.padL)/thinkGeo.step)+1;return k>=1&&k<=N?k:-1}
+$('think').addEventListener('mousemove',ev=>{const k=thinkTurnAt(ev);if(k!==hoverThink){hoverThink=k;drawThink()}
+  if(k<1)return hideTip();const f=F[k],b=budgetOf(k);
+  showTip(ev,`第 ${k} 回合（预算 ${b}）\n`+[1,0].map(s=>{const v=f.used_ms?f.used_ms[s]:null;return `${D.names[s]}：${fmtMs(v)}`+(v!=null&&v>b?'  超出预算':v!=null&&v>=b*.8?'  接近预算':'')}).join('\n'))});
+$('think').addEventListener('mouseleave',()=>{hoverThink=-1;drawThink();hideTip()});
+$('think').addEventListener('click',ev=>{const k=thinkTurnAt(ev);if(k>=0)seek(k)});
+function showTip(ev,text){const t=$('tip');t.textContent=text;t.style.display='block';const w=t.offsetWidth,h=t.offsetHeight;
+  t.style.left=clamp(ev.clientX+12,4,innerWidth-w-4)+'px';t.style.top=clamp(ev.clientY-h-10,4,innerHeight-h-4)+'px'}
+function hideTip(){$('tip').style.display='none'}
+
+// ====================================================================
+// 时间轴
+// ====================================================================
+let tlGeo=null;
+function drawTimeline(){
+  const c=$('timeline');if(!D||!c.clientWidth)return;
+  const dpr=fitCanvas(c),x=c.getContext('2d'),W=c.width/dpr,H=c.height/dpr,fs=parseFloat(getComputedStyle(document.body).fontSize);
+  x.setTransform(dpr,0,0,dpr,0,0);x.clearRect(0,0,W,H);
+  const padL=10,padR=10,w=W-padL-padR,X=t=>padL+(N?t/N:0)*w,mid=H/2,lane=[mid+H*.25,mid-H*.25];
+  tlGeo={padL,w};
+  x.fillStyle='#1b2029';x.fillRect(padL-4,3,w+8,H-6);
+  x.fillStyle='#232a35';x.fillRect(padL,mid-3,w,6);
+  const pos=cur+prog;
+  x.fillStyle='#55647a';x.fillRect(padL,mid-3,X(pos)-padL,6);
+  const every=N>150?50:N>60?20:N>20?10:5;
+  x.font=`${fs*.74}px ${NUMFONT}`;x.textAlign='center';x.textBaseline='middle';
+  for(let k=0;k<=N;k+=every){x.fillStyle='#3a4452';x.fillRect(X(k)-.5,mid-6,1,12);if(k&&X(N)-X(k)>fs*1.2){x.fillStyle='#0c0e11';x.fillText(k,X(k),mid);x.fillStyle='#9aa5b3';x.fillText(k,X(k),mid+.5)}}
+  // 标记：形状分种类，颜色和上下排分两方
+  const r=Math.max(3,H*.085);
+  for(const k of keyFrames){const cnt=[{},{}];
+    for(const e of keys[k]){const y=lane[e.lane],xx=X(k),p=PAL[e.lane];cnt[e.lane][e.kind]=(cnt[e.lane][e.kind]||0)+1;if(cnt[e.lane][e.kind]>1)continue;
+      const yy=y+(e.kind==='base'?(e.lane?-1:1)*H*.13:0);
+      if(e.kind==='kill'){x.strokeStyle=p.l;x.lineWidth=2.2;x.lineCap='round';x.beginPath();x.moveTo(xx-r,yy-r);x.lineTo(xx+r,yy+r);x.moveTo(xx+r,yy-r);x.lineTo(xx-r,yy+r);x.stroke()}
+      else if(e.kind==='base'){x.fillStyle=p.m;x.fillRect(xx-1.5,yy-H*.07,3,H*.14)}
+      else if(e.kind==='star'){starPath(x,xx,yy,r*1.25);x.fillStyle=GOLD;x.fill();x.lineWidth=1.2;x.strokeStyle=p.m;x.stroke()}
+      else{x.fillStyle=BAD;x.font=`800 ${r*3}px ${FONT}`;x.fillText('!',xx,yy);x.font=`${fs*.74}px ${NUMFONT}`}}}
+  if(hoverTl>=0){x.fillStyle='#ffffff55';x.fillRect(X(hoverTl)-.5,3,1,H-6)}
+  const hx=X(pos);x.fillStyle='#fff';x.fillRect(hx-1,2,2,H-4);x.beginPath();x.moveTo(hx-6,1);x.lineTo(hx+6,1);x.lineTo(hx,9);x.closePath();x.fill();
+  x.beginPath();x.moveTo(hx-6,H-1);x.lineTo(hx+6,H-1);x.lineTo(hx,H-9);x.closePath();x.fill();
+}
+function tlTurnAt(ev){const r=$('timeline').getBoundingClientRect();if(!tlGeo)return 0;return clamp(Math.round((ev.clientX-r.left-tlGeo.padL)/tlGeo.w*N),0,N)}
+{const c=$('timeline');let drag=false;
+  c.addEventListener('pointerdown',ev=>{if(!D)return;drag=true;c.setPointerCapture(ev.pointerId);seek(tlTurnAt(ev))});
+  c.addEventListener('pointermove',ev=>{if(!D)return;const k=tlTurnAt(ev);if(drag)seek(k);
+    if(k!==hoverTl){hoverTl=k;dirty=true}
+    const list=keys[k]||[];showTip(ev,`第 ${k} 回合`+(list.length?'\n'+[...new Set(list.map(e=>e.text))].join('\n'):''))});
+  c.addEventListener('pointerup',()=>{drag=false});c.addEventListener('pointercancel',()=>{drag=false});
+  c.addEventListener('pointerleave',()=>{hoverTl=-1;dirty=true;hideTip()})}
+
+// ====================================================================
+// 结束画面
+// ====================================================================
+function updateEnd(){
+  const on=!!D&&showEnd&&ARGS.end!=='0'&&cur===N&&prog===0&&!playing&&tail>=Math.min(TAIL_MAX,.9);
+  const el=$('endcard');if(on===el.classList.contains('on'))return;
+  el.classList.toggle('on',on);if(!on)return;
+  const res=D.result||{},w=res.winner,last=F[N],bots=res.bots||[];
+  const who=w>=0?`<span class="tk s${w}">${esc(D.names[w])}</span> 获胜`:'平局';
+  let why=reasonText(res.reason||last.reason);
+  if(res.reason==='fault'){const dead=bots.map((b,s)=>b&&b.dead?`${esc(D.names[s])}：${esc(b.dead)}`:'').filter(Boolean);why=(w>=0?'对手故障判负':'双方同一回合故障判负')+(dead.length?'<br><small class="c-bad">'+dead.join('；')+'</small>':'')}
+  const row=(k,a,b)=>`<tr><td class="l">${a}</td><td class="k">${k}</td><td class="r">${b}</td></tr>`;
+  const bh=res.base_hp||last.base_hp,ki=res.kills||last.kills,st=res.stars_eaten||last.stars_eaten;
+  $('endin').innerHTML=`<div class="ttl">对局结束</div><div class="who">${who}</div><div class="why">${why}</div>
+    <table>${row('','<span class="tk s0"><i></i>'+esc(D.names[0])+'</span>','<span class="tk s1"><i></i>'+esc(D.names[1])+'</span>')}${row('基地血量',bh[0],bh[1])}${row('击毁',ki[0],ki[1])}${row('吃星',st[0],st[1])}</table>
+    <div>共 ${res.turns!=null?res.turns:N} 回合 · 种子 ${esc(D.seed)}</div>
+    <div style="margin-top:1em"><button id="bendhide">看终局画面（E）</button> <button id="bendre">从头重播</button></div>`;
+  $('bendhide').onclick=()=>{showEnd=false;dirty=true};
+  $('bendre').onclick=()=>{seek(0);togglePlay(true)};
+}
+
+// ====================================================================
+// 播放控制
+// ====================================================================
+function seek(k){if(!D)return;holdTail=false;cur=clamp(Math.round(k),0,N);prog=0;tail=TAIL_MAX;playing=false;stepping=false;showEnd=true;dirty=true;syncPlay()}
+function togglePlay(on){if(!D)return;holdTail=false;const want=on==null?!(playing&&!stepping):on;
+  if(want){if(cur>=N){cur=0;prog=0}playing=true;stepping=false;showEnd=true}else{playing=false;stepping=false;if(prog>0){prog=0;tail=TAIL_MAX}}
+  dirty=true;syncPlay()}
+function stepFwd(){if(!D||cur>=N)return;holdTail=false;if(playing&&stepping){cur++;prog=0;if(cur>=N){seek(N);return}}playing=true;stepping=true;dirty=true;syncPlay()}   // 播一回合的动画后停下
+function keyJump(dir){if(!D)return;const pos=prog>0?cur+(dir>0?0:1):cur;const list=dir>0?keyFrames.filter(k=>k>pos):keyFrames.filter(k=>k<pos);
+  if(list.length)seek(dir>0?list[0]:list[list.length-1]);else seek(dir>0?N:0)}
+function syncPlay(){$('bplay').textContent=playing&&!stepping?'⏸ 暂停':'▶ 播放'}
+function setSpeed(v){speed=v;const s=$('speed');if(+s.value!==v){s.value=String(v)}}
+function frame(t){
+  const dt=Math.min(.1,(t-lastT)/1000)||0;lastT=t;
+  if(D){
+    if(playing){prog+=dt*speed;
+      while(prog>=1){cur++;prog-=1;if(cur>=N||stepping){cur=Math.min(cur,N);prog=0;tail=0;playing=false;stepping=false;syncPlay();break}}
+      dirty=true}
+    else if(tail<TAIL_MAX&&!holdTail){tail=Math.min(TAIL_MAX,tail+dt*Math.max(speed,1.2));dirty=true}
+    if(dirty){dirty=false;paint()}
+  }
+  requestAnimationFrame(frame);
+}
+function paint(){const hp=drawBoard(cur,prog,tail);updateSide(hp);drawTimeline();updateEnd()}
+
+// ====================================================================
+// 布局：棋盘尽量大，两侧栏各至少 21em；窗口窄了改成上下排
+// ====================================================================
+function layout(){
+  const fs=parseFloat(getComputedStyle(document.body).fontSize),vw=innerWidth,vh=innerHeight;
+  const narrow=vw<fs*21*2+420||vh<430;
+  document.body.classList.toggle('narrow',narrow);
+  let size;
+  if(narrow)size=Math.max(260,Math.min(vw-fs*1.5,vh-fs*9));
+  else{const m=document.querySelector('main'),avail=m.clientHeight-fs*1.5;size=Math.max(260,Math.min(avail,vw-fs*21*2-fs*3))}
+  document.documentElement.style.setProperty('--board',Math.floor(size)+'px');
+  terrainKey='';dirty=true;
+  if(D){drawLegend();drawThink();for(const seat of[0,1])for(let j=0;j<3;j++)miniTank(side['cv'+(seat*3+j)].el,typeOf(seat*3+j),seat);paint()}
+}
+addEventListener('resize',layout);
+
+// ====================================================================
+// 文件、按钮、键盘
+// ====================================================================
+async function openFile(file){
+  try{
+    let text;
+    if(/\.gz$/i.test(file.name)&&window.DecompressionStream)text=await new Response(file.stream().pipeThrough(new DecompressionStream('gzip'))).text();
+    else text=await file.text();
+    if(load(JSON.parse(text)))seek(0);
+  }catch(exc){alert('文件读不了：'+exc.message)}
+}
+$('file').addEventListener('change',e=>{if(e.target.files[0])openFile(e.target.files[0]);e.target.value=''});
+$('bopen').onclick=$('bopen2').onclick=()=>$('file').click();
+addEventListener('dragover',e=>{e.preventDefault();document.body.classList.add('dragging')});
+addEventListener('dragleave',()=>document.body.classList.remove('dragging'));
+addEventListener('drop',e=>{e.preventDefault();document.body.classList.remove('dragging');const f=e.dataTransfer.files[0];if(f)openFile(f)});
+$('bfirst').onclick=()=>seek(0);$('blast').onclick=()=>seek(N);
+$('bprev').onclick=()=>seek(prog>0?cur:cur-1);$('bnext').onclick=stepFwd;
+$('bpk').onclick=()=>keyJump(-1);$('bnk').onclick=()=>keyJump(1);
+$('bplay').onclick=()=>togglePlay();
+$('speed').innerHTML=SPEEDS.map(v=>`<option value="${v}">${v} 回合/秒</option>`).join('');
+$('speed').onchange=e=>{setSpeed(+e.target.value);e.target.blur()};
+$('endcard').addEventListener('click',e=>{if(e.target===$('endcard')){showEnd=false;dirty=true}});
+$('helpin').innerHTML=`<b style="font-size:1.2em">坦克大战回放查看器</b>
+<h3>键盘</h3><table>
+<tr><td><kbd>空格</kbd> / <kbd>K</kbd></td><td>播放 / 暂停</td><td><kbd>←</kbd> <kbd>→</kbd></td><td>上一回合 / 下一回合（下一回合会播动画）</td></tr>
+<tr><td><kbd>Shift</kbd>+<kbd>←</kbd> <kbd>→</kbd></td><td>后退 / 前进 10 回合</td><td><kbd>[</kbd> <kbd>]</kbd></td><td>上一个 / 下一个关键事件（击毁、基地掉血、吃星、故障）</td></tr>
+<tr><td><kbd>Home</kbd> <kbd>End</kbd></td><td>开局 / 终局</td><td><kbd>+</kbd> <kbd>-</kbd></td><td>加速 / 减速</td></tr>
+<tr><td><kbd>E</kbd></td><td>收起 / 显示结束画面</td><td><kbd>C</kbd></td><td>显示 / 隐藏坐标</td></tr>
+<tr><td><kbd>F</kbd></td><td>全屏</td><td><kbd>O</kbd> / <kbd>H</kbd></td><td>打开文件 / 本帮助</td></tr></table>
+<h3>画面</h3>
+两方：<span class="tk s0"><i></i>0 号位（下方）</span>橙色，炮塔浅色实心，子弹圆头；<span class="tk s1"><i></i>1 号位（上方）</span>蓝色，炮塔深色空心、车身带斜纹，子弹菱形。<br>
+车型：快速型尖头窄车身、三角炮塔；火力型圆炮塔、双炮管；装甲型宽车身、方炮塔、粗炮管。<br>
+坦克头顶的绿格是血量；左下角的金星是等级（2 级的子弹带白环，能打掉钢墙）；右下角的圆点是子弹：实心还能打，空心在飞，红色带斜杠是装填中。<br>
+出生点上的虚影和数字是复活倒计时；补给点上的数字是离下一批星星还有几回合。<br>
+停在某一回合时，虚线是这一回合子弹飞过的路线，虚线框是刚被打掉的墙，叉是被毁的位置，红杠是没走成的方向，车外一圈红色短线表示这一回合被打中。<br>
+一回合分两个小步：动画的前一半是第 1 小步，后一半是第 2 小步；被毁、复活、吃星、出星星在回合末。
+<h3>地址栏参数</h3>
+写在文件名后面，例如 <code>名字.html?turn=37&amp;p=0.5</code>（<code>#turn=37</code> 也行）。<table>
+<tr><td><code>turn=N</code></td><td>打开时停在第 N 回合结算后的画面</td></tr>
+<tr><td><code>p=0.5</code></td><td>和 turn 一起用：停在第 N 回合动画进行到一半的地方（0–1；0.5 是第 1 小步刚走完）</td></tr>
+<tr><td><code>tail=0.3</code></td><td>和 turn 一起用：停在第 N 回合结算后 0.3 回合的地方（回合末的爆炸、复活、升级特效）</td></tr>
+<tr><td><code>play=1</code></td><td>打开后自动播放（从 turn 指定的回合起）</td></tr>
+<tr><td><code>speed=4</code></td><td>播放速度，每秒几回合（0.5、1、2、4、8、16）</td></tr>
+<tr><td><code>end=0</code></td><td>到终局时不弹结束画面</td></tr>
+<tr><td><code>coords=0</code></td><td>不显示棋盘四周的坐标</td></tr>
+<tr><td><code>clean=1</code></td><td>录屏用：隐藏顶栏和时间轴图例</td></tr>
+<tr><td><code>check=1</code></td><td>自查：逐回合核对动画用的小步重算和回放数据是否一致，结果显示在顶栏</td></tr></table>
+<div style="margin-top:.8em;text-align:right"><button id="bhelpx">关闭</button></div>`;
+const toggleHelp=on=>$('help').classList.toggle('on',on);
+$('bhelp').onclick=()=>toggleHelp(true);$('bhelpx').onclick=()=>toggleHelp(false);
+$('help').addEventListener('click',e=>{if(e.target===$('help'))toggleHelp(false)});
+addEventListener('keydown',e=>{
+  if(e.ctrlKey||e.metaKey||e.altKey)return;
+  const tag=e.target.tagName;if(tag==='INPUT'||tag==='TEXTAREA')return;
+  if($('help').classList.contains('on')){if(e.key==='Escape'||e.key==='h'||e.key==='H'||e.key==='?')toggleHelp(false);return}
+  const k=e.key;let used=true;
+  if(k===' '||k==='k'||k==='K')togglePlay();
+  else if(k==='ArrowRight')e.shiftKey?seek(cur+10):stepFwd();
+  else if(k==='ArrowLeft')e.shiftKey?seek(cur-10):seek(prog>0?cur:cur-1);
+  else if(k==='Home')seek(0);else if(k==='End')seek(N);
+  else if(k==='['||k===','||k==='PageUp')keyJump(-1);else if(k===']'||k==='.'||k==='PageDown')keyJump(1);
+  else if(k==='+'||k==='=')setSpeed(SPEEDS[Math.min(SPEEDS.length-1,SPEEDS.indexOf(speed)+1)]);
+  else if(k==='-'||k==='_')setSpeed(SPEEDS[Math.max(0,SPEEDS.indexOf(speed)-1)]);
+  else if(k==='e'||k==='E'){showEnd=!showEnd;dirty=true}
+  else if(k==='c'||k==='C'){showCoords=!showCoords;terrainKey='';dirty=true}
+  else if(k==='f'||k==='F'){document.fullscreenElement?document.exitFullscreen():document.documentElement.requestFullscreen&&document.documentElement.requestFullscreen()}
+  else if(k==='o'||k==='O')$('file').click();
+  else if(k==='h'||k==='H'||k==='?')toggleHelp(true);
+  else used=false;
+  if(used)e.preventDefault();
+});
+
+// ====================================================================
+// 启动
+// ====================================================================
+(function start(){
+  setSpeed(SPEEDS.includes(argNum('speed',2))?argNum('speed',2):2);
+  if(ARGS.coords==='0')showCoords=false;
+  if(ARGS.clean==='1')document.body.classList.add('clean');
+  if(!EMBED||!load(EMBED)){$('drop').classList.add('on');layout();requestAnimationFrame(frame);return}
+  const turn=clamp(Math.round(argNum('turn',0)),0,N),p=argNum('p',0),tl=argNum('tail',-1);
+  if(p>0&&p<1&&turn>=1){cur=turn-1;prog=p}else{cur=turn;prog=0;tail=tl>=0?Math.min(tl,TAIL_MAX):TAIL_MAX;holdTail=tl>=0}
+  if(ARGS.end==='0')showEnd=false;
+  if(ARGS.check==='1'){const bad=selfCheck(),el=document.createElement('span');el.id='selfcheck';el.className='warnchip';
+    el.style.background=bad.length?'var(--bad)':'var(--good)';el.textContent=bad.length?`自查：${bad.length} 处不一致`:`自查通过（${N} 回合）`;el.title=bad.join('\n');el.dataset.detail=bad.join(' | ');$('meta').append(el)}
+  layout();paint();
+  const keepEnd=showEnd;
+  if(ARGS.play==='1'){togglePlay(true);showEnd=keepEnd}
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

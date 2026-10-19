@@ -5,21 +5,29 @@
  */
 import fs from 'node:fs'
 import path from 'node:path'
+import { execFileSync } from 'node:child_process'
 import {
   TANK_TASK, TANK_TASK_LABEL, WAREHOUSE_TASK, WAREHOUSE_TASK_LABEL,
   LAND_TASK, LAND_TASK_LABEL, BOMBERMAN_TASK, BOMBERMAN_TASK_LABEL, CTF_TASK, CTF_TASK_LABEL,
+  COMMIT0_TASK, COMMIT0_TASK_LABEL, SWE_BENCH_PRO_TASK, SWE_BENCH_PRO_TASK_LABEL,
+  FEATUREBENCH_TASK, FEATUREBENCH_TASK_LABEL, PIP_MIRRORS,
   type CheckResult, type InstallResult, type RunRecord, type TaskInfo,
 } from './shared.ts'
 import type { Guard, TaskDefinition } from './guard.ts'
 import { guardRoot, packageRoot } from './sandbox.ts'
+import { JobManager } from './jobs.ts'
+import type { JobInfo } from './shared.ts'
 
 /** Tasks offered by the installer. */
 export const TASKS: readonly TaskInfo[] = [
-  { id: TANK_TASK, label: TANK_TASK_LABEL, description: '1v1 坦克大战 bot；解压 workspace.zip，提交 workspace/submission/bot.cpp。' },
-  { id: WAREHOUSE_TASK, label: WAREHOUSE_TASK_LABEL, description: '单人单次仓储调度优化；解压 workspace.zip，提交 workspace/src/。' },
-  { id: LAND_TASK, label: LAND_TASK_LABEL, description: '圈地 1v1/4 人混战 bot；解压 workspace.zip，提交 workspace/submission/bot.cpp。' },
-  { id: BOMBERMAN_TASK, label: BOMBERMAN_TASK_LABEL, description: '炸弹人 2–10 人 bot；解压 workspace.zip，提交 workspace/submission/bot.cpp。' },
-  { id: CTF_TASK, label: CTF_TASK_LABEL, description: '夺旗 2–15 人 bot；解压 workspace.zip，提交 workspace/submission/bot.cpp。' },
+  { id: TANK_TASK, label: TANK_TASK_LABEL, description: '1v1 坦克大战 bot；解压 workspace.zip，提交 workspace/submission/bot.cpp。', timeLimitMinutes: 90, timeLimitEnabled: true, needsSetup: false },
+  { id: WAREHOUSE_TASK, label: WAREHOUSE_TASK_LABEL, description: '单人单次仓储调度优化；解压 workspace.zip，提交 workspace/src/。', timeLimitMinutes: 90, timeLimitEnabled: true, needsSetup: false },
+  { id: LAND_TASK, label: LAND_TASK_LABEL, description: '圈地 1v1/4 人混战 bot；解压 workspace.zip，提交 workspace/submission/bot.cpp。', timeLimitMinutes: 90, timeLimitEnabled: true, needsSetup: false },
+  { id: BOMBERMAN_TASK, label: BOMBERMAN_TASK_LABEL, description: '炸弹人 2–10 人 bot；解压 workspace.zip，提交 workspace/submission/bot.cpp。', timeLimitMinutes: 90, timeLimitEnabled: true, needsSetup: false },
+  { id: CTF_TASK, label: CTF_TASK_LABEL, description: '夺旗 2–15 人 bot；解压 workspace.zip，提交 workspace/submission/bot.cpp。', timeLimitMinutes: 90, timeLimitEnabled: true, needsSetup: false },
+  { id: COMMIT0_TASK, label: COMMIT0_TASK_LABEL, description: 'Commit0 单库实现：按规格从零实现一个 Python 库，单元测试评分。', timeLimitMinutes: 480, timeLimitEnabled: false, needsSetup: true, repoUrl: 'https://github.com/msiemens/tinydb', remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/msiemens/tinydb.git' }] },
+  { id: SWE_BENCH_PRO_TASK, label: SWE_BENCH_PRO_TASK_LABEL, description: 'SWE-Bench Pro 单任务：在真实仓库中修复一个多文件 issue，隐藏测试评分。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true, repoUrl: 'https://github.com/ansible/ansible', remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/ansible/ansible.git' }, { id: 'gitee', label: 'Gitee 镜像', url: 'https://gitee.com/mirrors/ansible.git' }] },
+  { id: FEATUREBENCH_TASK, label: FEATUREBENCH_TASK_LABEL, description: 'FeatureBench 单 feature：实现一个跨文件功能，隐藏测试评分。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true, repoUrl: 'https://github.com/mwaskom/seaborn', remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/mwaskom/seaborn.git' }, { id: 'gitee', label: 'Gitee 镜像', url: 'https://gitee.com/mirrors/seaborn.git' }, { id: 'gitcode', label: 'GitCode 镜像', url: 'https://gitcode.com/gh_mirrors/se/seaborn.git' }] },
 ]
 
 /** The tank task definition (original prompt; only halftime mechanics removed). */
@@ -28,6 +36,9 @@ export const TANK_DEFINITION: TaskDefinition = {
   label: TANK_TASK_LABEL,
   description: TASKS[0]!.description,
   asset: path.join(packageRoot(), 'assets', 'tank', 'workspace.zip'),
+  timeLimitMinutes: 90,
+  timeLimitEnabled: true,
+  needsSetup: false,
   prompt() {
     return [
       '按照要求编写尽可能强的坦克大战 bot。你的对手是其他顶尖 AI 模型写的 bot，它们可能主动设计战术。基准是一个中等强度、思路常规的 bot，它在正式比赛中是 0 分线；战胜基准不代表足够强，正式对手远强于基准。正式赛是 1 对 1 循环赛，用 Bradley-Terry 模型拟合实力值。',
@@ -55,6 +66,9 @@ export const WAREHOUSE_DEFINITION: TaskDefinition = {
   label: WAREHOUSE_TASK_LABEL,
   description: TASKS[1]!.description,
   asset: path.join(packageRoot(), 'assets', 'warehouse', 'workspace.zip'),
+  timeLimitMinutes: 90,
+  timeLimitEnabled: true,
+  needsSetup: false,
   prompt() {
     return [
       '这是一场 AI 编程赛。你接手了一个代码混乱的老系统：src/ 里是一个仓储机器人调度仿真系统，功能正确，但运行很慢。你的任务：在输出完全不变的前提下，让它尽可能快。',
@@ -79,6 +93,9 @@ export const LAND_DEFINITION: TaskDefinition = {
   label: LAND_TASK_LABEL,
   description: TASKS[2]!.description,
   asset: path.join(packageRoot(), 'assets', 'land', 'workspace.zip'),
+  timeLimitMinutes: 90,
+  timeLimitEnabled: true,
+  needsSetup: false,
   prompt() {
     return [
       '这是一场正式的 AI 编程对抗赛，你的对手是其他顶尖 AI 模型写的 bot，它们会主动切断你、抢你的地。比赛结果会公开排名，请拿出你的最高水平。',
@@ -94,6 +111,9 @@ export const BOMBERMAN_DEFINITION: TaskDefinition = {
   label: BOMBERMAN_TASK_LABEL,
   description: TASKS[3]!.description,
   asset: path.join(packageRoot(), 'assets', 'bomberman', 'workspace.zip'),
+  timeLimitMinutes: 90,
+  timeLimitEnabled: true,
+  needsSetup: false,
   prompt() {
     return [
       '按照要求编写尽可能强bot，你的对手是全球其他顶尖ai，可能主动设计战术。基准只是很弱的bot，它在正式比赛为0分线。正式赛会对战多轮，用Bradley-Terry模型拟合实力值。',
@@ -108,10 +128,106 @@ export const CTF_DEFINITION: TaskDefinition = {
   label: CTF_TASK_LABEL,
   description: TASKS[4]!.description,
   asset: path.join(packageRoot(), 'assets', 'ctf', 'workspace.zip'),
+  timeLimitMinutes: 90,
+  timeLimitEnabled: true,
+  needsSetup: false,
   prompt() {
     return [
       '按照要求编写尽可能强的 bot，你的对手是全球其他顶尖 AI，可能主动设计战术。基准是一个中等强度、思路常规的 bot，它在正式比赛是 0 分线；战胜基准不代表足够强，正式对手远强于基准。正式赛会对战多轮，用 Bradley-Terry 模型拟合实力值。',
       '解压 workspace.zip，阅读 README.md 和 RULES.md，编写支持 2–15 方的夺旗 bot。你有 60 分钟，只看最终 bot 的强度，提前交卷不加分，请充分利用时间持续改进；可以适当超时，但到 90 分钟会强制交卷。允许本地工具、对战和复盘，禁止联网、调用其他 AI 或查看其他选手资料。提交 workspace/submission/bot.cpp，简述策略。',
+    ].join('\n')
+  },
+}
+
+/** Run the task's host-side setup script with network access. */
+function runSetup(workspacePath: string): void {
+  execFileSync('bash', ['setup.sh'], {
+    cwd: workspacePath,
+    stdio: 'inherit',
+    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+  })
+}
+
+/** Commit0 single-library task. */
+export const COMMIT0_DEFINITION: TaskDefinition = {
+  id: COMMIT0_TASK,
+  label: COMMIT0_TASK_LABEL,
+  description: TASKS[5]!.description,
+  asset: path.join(packageRoot(), 'assets', 'commit0', 'workspace.zip'),
+  prepare: runSetup,
+  timeLimitMinutes: 480,
+  timeLimitEnabled: false,
+  needsSetup: true,
+  repoUrl: 'https://github.com/msiemens/tinydb',
+  remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/msiemens/tinydb.git' }],
+  prompt() {
+    return [
+      '这是 Commit0 的一个单库实现任务：从零实现一个 Python 库，使其通过仓库自带的完整单元测试。',
+      '',
+      '当前 workspace 已经由安装器准备好：包含该库的测试、规格文档和项目配置，但库的实现源码已被移除。请阅读 TASK.md 和规格文档，自己实现库，直到单元测试全部通过。',
+      '',
+      '要求：',
+      '- 只能修改当前工作区内的文件；工作区外不可访问，包括 /tmp；',
+      '- 禁止联网、禁止调用其他 AI 或子代理；',
+      '- 使用工作区里的 .venv 运行测试，例如 .venv/bin/python -m pytest tests；',
+      '- 不要删除、修改或伪造测试；评分以隐藏的测试执行为准；',
+      '- 完成后用几句话总结实现思路。',
+    ].join('\n')
+  },
+}
+
+/** SWE-Bench Pro single-task task. */
+export const SWE_BENCH_PRO_DEFINITION: TaskDefinition = {
+  id: SWE_BENCH_PRO_TASK,
+  label: SWE_BENCH_PRO_TASK_LABEL,
+  description: TASKS[6]!.description,
+  asset: path.join(packageRoot(), 'assets', 'swe-bench-pro', 'workspace.zip'),
+  prepare: runSetup,
+  timeLimitMinutes: 1440,
+  timeLimitEnabled: false,
+  needsSetup: true,
+  repoUrl: 'https://github.com/ansible/ansible',
+  remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/ansible/ansible.git' }, { id: 'gitee', label: 'Gitee 镜像', url: 'https://gitee.com/mirrors/ansible.git' }],
+  prompt() {
+    return [
+      '这是 SWE-Bench Pro 的一个单任务：在真实的 Python 仓库中完成一个多文件 issue 修复。',
+      '',
+      '当前 workspace 已经由安装器准备好：包含目标仓库在指定 commit 的源码和依赖环境。请阅读 TASK.md 中的 issue 描述与要求，修改源码完成修复。',
+      '',
+      '要求：',
+      '- 只能修改当前工作区内的文件；工作区外不可访问，包括 /tmp；',
+      '- 禁止联网、禁止调用其他 AI 或子代理；',
+      '- 使用工作区里的 .venv 运行测试，例如 .venv/bin/python -m pytest <测试文件>；',
+      '- 不要删除、修改或伪造测试；评分会在你的代码上应用隐藏测试；',
+      '- 完成后用几句话总结修改。',
+    ].join('\n')
+  },
+}
+
+/** FeatureBench single-feature task. */
+export const FEATUREBENCH_DEFINITION: TaskDefinition = {
+  id: FEATUREBENCH_TASK,
+  label: FEATUREBENCH_TASK_LABEL,
+  description: TASKS[7]!.description,
+  asset: path.join(packageRoot(), 'assets', 'featurebench', 'workspace.zip'),
+  prepare: runSetup,
+  timeLimitMinutes: 1440,
+  timeLimitEnabled: false,
+  needsSetup: true,
+  repoUrl: 'https://github.com/mwaskom/seaborn',
+  remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/mwaskom/seaborn.git' }, { id: 'gitee', label: 'Gitee 镜像', url: 'https://gitee.com/mirrors/seaborn.git' }, { id: 'gitcode', label: 'GitCode 镜像', url: 'https://gitcode.com/gh_mirrors/se/seaborn.git' }],
+  prompt() {
+    return [
+      '这是 FeatureBench 的一个单 feature 任务：在真实 Python 仓库中实现一个跨文件功能，并保持已有功能不退化。',
+      '',
+      '当前 workspace 已经由安装器准备好：包含目标仓库源码和依赖环境。请阅读 TASK.md 中的功能需求，修改源码完成实现。',
+      '',
+      '要求：',
+      '- 只能修改当前工作区内的文件；工作区外不可访问，包括 /tmp；',
+      '- 禁止联网、禁止调用其他 AI 或子代理；',
+      '- 使用工作区里的 .venv 运行测试；',
+      '- 不要删除、修改或伪造测试；评分会在你的代码上运行隐藏测试和回归测试；',
+      '- 完成后用几句话总结实现思路。',
     ].join('\n')
   },
 }
@@ -123,16 +239,56 @@ export const TASK_DEFINITIONS: Readonly<Record<string, TaskDefinition>> = {
   [LAND_TASK]: LAND_DEFINITION,
   [BOMBERMAN_TASK]: BOMBERMAN_DEFINITION,
   [CTF_TASK]: CTF_DEFINITION,
+  [COMMIT0_TASK]: COMMIT0_DEFINITION,
+  [SWE_BENCH_PRO_TASK]: SWE_BENCH_PRO_DEFINITION,
+  [FEATUREBENCH_TASK]: FEATUREBENCH_DEFINITION,
 }
 
 /** Install, check, and prompt services for the task packs. */
+export interface SetupOptions {
+  cloneSource?: string
+  customCloneUrl?: string
+  pipIndex?: string
+  customPipUrl?: string
+  gitProxyUrl?: string
+  pipProxyUrl?: string
+}
+
 export class TaskService {
   private readonly guard: Guard
   private readonly registry: { get(id: string): { path: string; title?: string } | undefined }
+  readonly jobs: JobManager
 
   constructor(guard: Guard, registry: { get(id: string): { path: string; title?: string } | undefined }) {
     this.guard = guard
     this.registry = registry
+    this.jobs = new JobManager()
+  }
+
+  /** The clone URL for a task, honouring the selected source. */
+  cloneUrl(definition: TaskDefinition, options: SetupOptions): string {
+    const repo = definition.repoUrl ?? ''
+    const source = options.cloneSource ?? 'github'
+    if (source === 'custom' && options.customCloneUrl !== undefined && options.customCloneUrl.trim() !== '') {
+      return options.customCloneUrl.trim().replace(/\/$/, '') + '/' + repo.replace(/^https?:\/\/github\.com\//, '')
+    }
+    const remote = definition.remotes?.find(item => item.id === source)
+    if (remote !== undefined) return remote.url
+    return definition.remotes?.[0]?.url ?? repo
+  }
+
+  /** Normalize a user-entered proxy address, or return an empty string. */
+  proxyValue(raw: string | undefined): string {
+    const value = (raw ?? '').trim()
+    if (value === '') return ''
+    return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : 'http://' + value
+  }
+
+  /** The pip index URL for a task, honouring the selected mirror. */
+  pipIndexUrl(options: SetupOptions): string {
+    const index = options.pipIndex ?? 'pypi'
+    if (index === 'custom') return (options.customPipUrl ?? '').trim() || 'https://pypi.org/simple'
+    return PIP_MIRRORS.find(item => item.id === index)?.url ?? 'https://pypi.org/simple'
   }
 
   /** Check one workspace before install. */
@@ -151,6 +307,62 @@ export class TaskService {
   /** A known task definition, or undefined. */
   definition(taskId: string): TaskDefinition | undefined {
     return TASK_DEFINITIONS[taskId]
+  }
+
+  /** Start a non-blocking install. The settings page polls the returned job. */
+  startInstall(workspaceId: string, taskId: string, options: SetupOptions = {}): { ok: boolean; jobId?: string; error?: string } {
+    const definition = TASK_DEFINITIONS[taskId]
+    if (definition === undefined) return { ok: false, error: '未知任务：' + taskId }
+    const checked = this.check(workspaceId)
+    if (!checked.ok) return { ok: false, error: checked.error }
+    if (!checked.empty) return { ok: false, error: '工作区不是空的；未执行任何操作。' }
+    if (!this.guard.active) return { ok: false, error: '请先启用评测守护，再安装评测任务。' }
+    try {
+      fs.copyFileSync(this.materialZip(taskId), path.join(checked.path, 'workspace.zip'))
+    } catch (error: unknown) {
+      return { ok: false, error: '复制素材失败：' + (error instanceof Error ? error.message : String(error)) }
+    }
+    const env: Record<string, string> = {
+      EVAL_CLONE_URL: this.cloneUrl(definition, options),
+      EVAL_PIP_INDEX_URL: this.pipIndexUrl(options),
+      GIT_TERMINAL_PROMPT: '0',
+      EVAL_GIT_PROXY: this.proxyValue(options.gitProxyUrl),
+      EVAL_PIP_PROXY: this.proxyValue(options.pipProxyUrl),
+    }
+    const command = definition.needsSetup ? ['bash', 'setup.sh'] : ['bash', '-c', 'true']
+    const job = this.jobs.start({
+      kind: 'install', task: taskId, workspaceId, command, cwd: checked.path, env,
+      onSuccess: () => {
+        const runId = this.newRunId()
+        const prompt = this.guard.promptFor(checked.path, this.materialZip(taskId), definition)
+        const run: RunRecord = {
+          runId, task: definition.id, workspaceId, workspacePath: checked.path,
+          sessionId: null, createdAt: Date.now(), startedAt: null, endedAt: null,
+          status: 'prepared', prompt,
+          timeLimitMinutes: this.guard.configuration.timeLimitMinutes,
+        }
+        this.guard.registerRun(run)
+        return { runId, prompt }
+      },
+    })
+    return { ok: true, jobId: job.id }
+  }
+
+  /** Start a single-workspace evaluation job. */
+  startEval(workspaceId: string, taskId: string): { ok: boolean; jobId?: string; error?: string } {
+    const definition = TASK_DEFINITIONS[taskId]
+    if (definition === undefined) return { ok: false, error: '未知任务：' + taskId }
+    const checked = this.check(workspaceId)
+    if (!checked.ok) return { ok: false, error: checked.error }
+    const script = path.join(packageRoot(), 'eval', taskId + '.py')
+    if (!fs.existsSync(script)) return { ok: false, error: '评测脚本不存在：' + script }
+    const job = this.jobs.start({
+      kind: 'eval', task: taskId, workspaceId,
+      command: ['python3', '-X', 'utf8', script, '--workspace', checked.path],
+      cwd: packageRoot(),
+      env: { PYTHONPATH: '', PYTHONHOME: '' },
+    })
+    return { ok: true, jobId: job.id }
   }
 
   /** Copy the packaged workspace.zip to a stable material path for install/manual use. */
@@ -186,8 +398,9 @@ export class TaskService {
     }
     try {
       fs.copyFileSync(this.materialZip(taskId), path.join(checked.path, 'workspace.zip'))
+      if (definition.prepare !== undefined) definition.prepare(checked.path)
     } catch (error: unknown) {
-      return { ok: false, workspaceId, workspacePath: checked.path, error: '复制素材失败：' + (error instanceof Error ? error.message : String(error)) }
+      return { ok: false, workspaceId, workspacePath: checked.path, error: '任务准备失败：' + (error instanceof Error ? error.message : String(error)) }
     }
     const runId = this.newRunId()
     const prompt = promptOverride ?? this.guard.promptFor(checked.path, this.materialZip(taskId), definition)

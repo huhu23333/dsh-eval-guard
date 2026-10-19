@@ -5,7 +5,9 @@
 import { useEffect, useState, useSyncExternalStore, type CSSProperties, type ReactElement } from 'react'
 import {
   CHECK_ROUTE, EVENTS_ROUTE, INSTALL_ROUTE, MANUAL_ROUTE, REVEAL_ROUTE, STATE_ROUTE,
-  type CheckResult, type GuardEvent, type GuardState, type InstallResult, type ManualPaths,
+  JOBS_ROUTE, JOB_ROUTE, JOB_CANCEL_ROUTE, EVAL_ROUTE,
+  type CheckResult, type GuardEvent, type GuardState, type InstallResult, type ManualPaths, type JobDetail, type JobInfo,
+  PIP_MIRRORS,
 } from '../shared.ts'
 import { evalBridge } from './bridge.ts'
 
@@ -29,6 +31,12 @@ interface Draft {
   forbiddenPaths: string
   toolBlacklistUseDefault: boolean
   toolBlacklist: string
+  cloneSource: string
+  customCloneUrl: string
+  pipIndex: string
+  customPipUrl: string
+  gitProxyUrl: string
+  pipProxyUrl: string
 }
 
 const EMPTY: Draft = {
@@ -38,6 +46,12 @@ const EMPTY: Draft = {
   forbiddenPaths: '',
   toolBlacklistUseDefault: true,
   toolBlacklist: '',
+  cloneSource: 'github',
+  customCloneUrl: '',
+  pipIndex: 'pypi',
+  customPipUrl: '',
+  gitProxyUrl: '',
+  pipProxyUrl: '',
 }
 
 const box: CSSProperties = { border: '1px solid var(--vscode-panel-border, #3c3c3c)', borderRadius: 8, padding: 14, marginBottom: 14 }
@@ -58,6 +72,12 @@ function normalize(value: Record<string, unknown> | undefined): Draft {
     forbiddenPaths: typeof value?.forbiddenPaths === 'string' ? value.forbiddenPaths : '',
     toolBlacklistUseDefault: value?.toolBlacklistUseDefault !== false,
     toolBlacklist: typeof value?.toolBlacklist === 'string' ? value.toolBlacklist : '',
+    cloneSource: typeof value?.cloneSource === 'string' && value.cloneSource !== '' ? value.cloneSource : 'github',
+    customCloneUrl: typeof value?.customCloneUrl === 'string' ? value.customCloneUrl : '',
+    pipIndex: typeof value?.pipIndex === 'string' && value.pipIndex !== '' ? value.pipIndex : 'pypi',
+    customPipUrl: typeof value?.customPipUrl === 'string' ? value.customPipUrl : '',
+    gitProxyUrl: typeof value?.gitProxyUrl === 'string' ? value.gitProxyUrl : '',
+    pipProxyUrl: typeof value?.pipProxyUrl === 'string' ? value.pipProxyUrl : '',
   }
 }
 
@@ -71,13 +91,37 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
   const [pendingEnable, setPendingEnable] = useState(false)
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
-  const [workspaceId, setWorkspaceId] = useState('')
-  const [taskId, setTaskId] = useState('')
+  const [workspaceId, setWorkspaceId] = useState(() => typeof localStorage === 'undefined' ? '' : localStorage.getItem('evalGuard.workspaceId') ?? '')
+  const [taskId, setTaskId] = useState(() => typeof localStorage === 'undefined' ? '' : localStorage.getItem('evalGuard.taskId') ?? '')
   const [check, setCheck] = useState<CheckResult | null>(null)
   const [manual, setManual] = useState<ManualPaths | null>(null)
   const [prompt, setPrompt] = useState('')
   const [copied, setCopied] = useState('')
   const workspaces = evalBridge()?.workspaces() ?? []
+  const [job, setJob] = useState<JobDetail | null>(null)
+  const [jobNotice, setJobNotice] = useState('')
+
+  const pollJob = (id: string): void => {
+    fetch(JOB_ROUTE + '?id=' + encodeURIComponent(id)).then(readJson<JobDetail>).then(setJob).catch(() => undefined)
+  }
+  const loadLatestJob = (workspace: string, task: string): void => {
+    if (workspace === '' || task === '') { setJob(null); return }
+    fetch(JOBS_ROUTE + '?workspaceId=' + encodeURIComponent(workspace) + '&task=' + encodeURIComponent(task))
+      .then(readJson<JobInfo[]>).then(items => {
+        const latest = items[0]
+        if (latest !== undefined) pollJob(latest.id)
+        else setJob(null)
+      }).catch(() => undefined)
+  }
+  useEffect(() => {
+    if (job === null || (job.status !== 'running' && job.status !== 'queued')) return
+    const timer = setInterval(() => { pollJob(job.id) }, 800)
+    return () => clearInterval(timer)
+  }, [job])
+  useEffect(() => { if (job?.status === 'succeeded' && job.kind === 'install' && job.prompt !== undefined) {
+    setPrompt(job.prompt); setJobNotice(t('settings.installOk')); loadState()
+  } }, [job])
+  useEffect(() => { loadLatestJob(workspaceId, taskId) }, [workspaceId, taskId])
 
   useEffect(() => {
     if (snapshot.status !== 'ready' || snapshot.value === undefined || dirty) return
@@ -101,7 +145,7 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
   }, [])
 
   useEffect(() => {
-    if (taskId === '' && state !== null && state.tasks.length > 0) setTaskId(state.tasks[0]!.id)
+    if (state !== null && state.tasks.length > 0 && (taskId === '' || !state.tasks.some(task => task.id === taskId))) setTaskId(state.tasks[0]!.id)
   }, [state, taskId])
 
   const ready = snapshot.status === 'ready' && snapshot.writable
@@ -124,6 +168,21 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
   const edit = (patch: Partial<Draft>): void => {
     setDraft(current => ({ ...current, ...patch }))
     setDirty(true)
+  }
+
+  const selectTask = (next: string): void => {
+    setTaskId(next)
+    try { localStorage.setItem('evalGuard.taskId', next) } catch { /* storage is optional */ }
+    setCheck(null); setManual(null); setPrompt(''); setJob(null); setJobNotice('')
+    if (workspaceId !== '') loadManual(workspaceId, next)
+    const task = state?.tasks.find(item => item.id === next)
+    if (task === undefined) return
+    const remotes = task.remotes ?? []
+    const cloneSource = draft.cloneSource === 'custom' || remotes.some(remote => remote.id === draft.cloneSource)
+      ? draft.cloneSource : (remotes[0]?.id ?? 'github')
+    setDraft(current => ({ ...current, timeLimitMinutes: task.timeLimitMinutes, timeLimitEnabled: task.timeLimitEnabled, cloneSource }))
+    setNotice(t('settings.taskDefaults').replace('{minutes}', String(task.timeLimitMinutes)).replace('{state}', task.timeLimitEnabled ? t('settings.on') : t('settings.off')))
+    void save({ timeLimitMinutes: task.timeLimitMinutes, timeLimitEnabled: task.timeLimitEnabled, cloneSource })
   }
 
   const toggleEnabled = (next: boolean): void => {
@@ -155,22 +214,34 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
 
   const install = async (): Promise<void> => {
     if (workspaceId === '' || taskId === '') return
-    setError(''); setNotice('')
+    setError(''); setNotice(''); setJobNotice('')
     const checked = await fetch(CHECK_ROUTE + '?workspaceId=' + encodeURIComponent(workspaceId)).then(readJson<CheckResult>)
     setCheck(checked)
-    if (!checked.ok || !checked.empty) {
-      setError(checked.error ?? t('settings.nonEmpty'))
-      return
-    }
+    if (!checked.ok || !checked.empty) { setError(checked.error ?? t('settings.nonEmpty')); return }
     const result = await fetch(INSTALL_ROUTE, {
       method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ workspaceId, task: taskId, cloneSource: draft.cloneSource, customCloneUrl: draft.customCloneUrl,
+        pipIndex: draft.pipIndex, customPipUrl: draft.customPipUrl, gitProxyUrl: draft.gitProxyUrl, pipProxyUrl: draft.pipProxyUrl }),
+    }).then(readJson<{ ok: boolean; jobId?: string; error?: string }>)
+    if (!result.ok || result.jobId === undefined) { setError(result.error ?? '安装失败'); return }
+    pollJob(result.jobId)
+  }
+
+  const evaluate = async (): Promise<void> => {
+    if (workspaceId === '' || taskId === '') return
+    setError(''); setNotice(''); setJobNotice('')
+    const result = await fetch(EVAL_ROUTE, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ workspaceId, task: taskId }),
-    }).then(readJson<InstallResult>)
-    if (!result.ok || result.prompt === undefined) { setError(result.error ?? '安装失败'); return }
-    setPrompt(result.prompt)
-    setNotice(t('settings.installOk'))
-    evalBridge()?.startSession(workspaceId, result.prompt)
-    loadState()
+    }).then(readJson<{ ok: boolean; jobId?: string; error?: string }>)
+    if (!result.ok || result.jobId === undefined) { setError(result.error ?? '评测启动失败'); return }
+    pollJob(result.jobId)
+  }
+
+  const cancelJob = async (): Promise<void> => {
+    if (job === null) return
+    await fetch(JOB_CANCEL_ROUTE, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: job.id }) })
+    pollJob(job.id)
   }
 
   const copy = async (label: string, text: string): Promise<void> => {
@@ -208,17 +279,6 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
     </section>
 
     <section style={box}>
-      <div style={row}>
-        <label><input type="checkbox" checked={draft.timeLimitEnabled} disabled={!ready} onChange={event => void save({ timeLimitEnabled: event.target.checked })} /> {t('settings.timeLimit')}</label>
-        <input type="number" min={1} max={1440} value={draft.timeLimitMinutes} disabled={!ready}
-          style={{ width: 90 }} onChange={event => edit({ timeLimitMinutes: Number(event.target.value) })}
-          onBlur={() => void save({ timeLimitMinutes: draft.timeLimitMinutes })} />
-        <span style={note}>{t('settings.minutes')}</span>
-      </div>
-      <p style={note}>{t('settings.timeLimitHint')}</p>
-    </section>
-
-    <section style={box}>
       <strong>{t('settings.forbidden')}</strong>
       <p style={note}>{t('settings.forbiddenHint')}</p>
       <textarea style={textarea} value={draft.forbiddenPaths} disabled={!ready}
@@ -244,27 +304,79 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
       <div style={row}>
         <span>{t('settings.taskLabel')}:</span>
         <select value={taskId} disabled={state === null || state.tasks.length === 0}
-          onChange={event => {
-            const next = event.target.value
-            setTaskId(next); setCheck(null); setManual(null); setPrompt('')
-            if (workspaceId !== '') loadManual(workspaceId, next)
-          }}>
+          onChange={event => selectTask(event.target.value)}>
           {(state?.tasks ?? []).map(task => <option key={task.id} value={task.id}>{task.label}</option>)}
         </select>
       </div>
       {state !== null && <p style={note}>{state.tasks.find(task => task.id === taskId)?.description ?? ''}</p>}
+      {(() => {
+        const selected = state?.tasks.find(item => item.id === taskId)
+        if (selected?.needsSetup !== true) return null
+        return <div>
+          <div style={row}>
+            <span>{t('settings.cloneSource')}:</span>
+            <select value={draft.cloneSource} disabled={!ready} onChange={event => void save({ cloneSource: event.target.value })}>
+              {(selected.remotes ?? []).map(remote => <option key={remote.id} value={remote.id}>{remote.label}</option>)}
+              <option value="custom">{t('settings.custom')}</option>
+            </select>
+            {draft.cloneSource === 'custom' && <input style={{ width: 260 }} disabled={!ready} value={draft.customCloneUrl}
+              onChange={event => edit({ customCloneUrl: event.target.value })} onBlur={() => void save({ customCloneUrl: draft.customCloneUrl })} placeholder="https://git.example.com" />}
+          </div>
+          <div style={row}>
+            <span>{t('settings.pipIndex')}:</span>
+            <select value={draft.pipIndex} disabled={!ready} onChange={event => void save({ pipIndex: event.target.value })}>
+              {PIP_MIRRORS.map(mirror => <option key={mirror.id} value={mirror.id}>{mirror.label}</option>)}
+              <option value="custom">{t('settings.custom')}</option>
+            </select>
+            {draft.pipIndex === 'custom' && <input style={{ width: 260 }} disabled={!ready} value={draft.customPipUrl}
+              onChange={event => edit({ customPipUrl: event.target.value })} onBlur={() => void save({ customPipUrl: draft.customPipUrl })} placeholder="https://pypi.example.com/simple" />}
+          </div>
+          <div style={row}>
+            <span>{t('settings.gitProxy')}:</span>
+            <input style={{ width: 260 }} disabled={!ready} value={draft.gitProxyUrl}
+              onChange={event => edit({ gitProxyUrl: event.target.value })} onBlur={() => void save({ gitProxyUrl: draft.gitProxyUrl })} placeholder="127.0.0.1:7897" />
+          </div>
+          <div style={row}>
+            <span>{t('settings.pipProxy')}:</span>
+            <input style={{ width: 260 }} disabled={!ready} value={draft.pipProxyUrl}
+              onChange={event => edit({ pipProxyUrl: event.target.value })} onBlur={() => void save({ pipProxyUrl: draft.pipProxyUrl })} placeholder="127.0.0.1:7897" />
+          </div>
+        </div>
+      })()}
       <div style={row}>
         <span>{t('settings.workspace')}:</span>
-        <select value={workspaceId} onChange={event => { setWorkspaceId(event.target.value); loadManual(event.target.value, taskId) }}>
+        <select value={workspaceId} onChange={event => { const next = event.target.value; setWorkspaceId(next); try { localStorage.setItem('evalGuard.workspaceId', next) } catch { /* storage is optional */ } loadManual(next, taskId); loadLatestJob(next, taskId) }}>
           <option value="">{t('settings.pickWorkspace')}</option>
           {workspaces.map(workspace => <option key={workspace.id} value={workspace.id}>{workspace.label}</option>)}
         </select>
-        <button style={primary} disabled={workspaceId === '' || taskId === ''} onClick={() => void install()}>{t('settings.check')}</button>
+        <button style={primary} disabled={workspaceId === '' || taskId === '' || job?.status === 'running'} onClick={() => void install()}>{t('settings.check')}</button>
+        <button style={button} disabled={workspaceId === '' || taskId === '' || job?.status === 'running'} onClick={() => void evaluate()}>{t('settings.evaluate')}</button>
       </div>
+      <p style={note}>{t('settings.evalHint')}</p>
       {workspaces.length === 0 && <p style={note}>{t('settings.noWorkspaces')}</p>}
       {check !== null && !check.empty && <p style={{ ...note, color: '#d99' }}>{t('settings.nonEmpty')} ({check.entries.slice(0, 6).join(', ')})</p>}
       {notice !== '' && <p style={{ ...note, color: '#7c7' }}>{notice}</p>}
       {error !== '' && <p style={{ ...note, color: '#d77' }}>{error}</p>}
+      {jobNotice !== '' && <p style={{ ...note, color: '#7c7' }}>{jobNotice}</p>}
+      {job !== null && <div style={{ ...box, borderColor: job.status === 'failed' ? '#a55' : job.status === 'succeeded' ? '#4a7' : '#3a6' }}>
+        <div style={row}><strong>{job.kind === 'install' ? t('settings.installJob') : t('settings.evalJob')}</strong><span>{job.status}</span>
+          {job.status === 'running' && <button style={danger} onClick={() => void cancelJob()}>{t('settings.cancel')}</button>}
+          {job.kind === 'install' && job.status === 'succeeded' && job.prompt !== undefined && workspaceId !== '' && <button style={primary} onClick={() => evalBridge()?.startSession(workspaceId, job.prompt!)}>{t('settings.startSession')}</button>}</div>
+        {job.error !== undefined && <p style={{ ...note, color: '#d77' }}>{job.error}</p>}
+        <pre style={{ ...textarea, maxHeight: 260, overflow: 'auto' }}>{job.log || t('settings.waiting')}</pre>
+        {job.result !== undefined && <pre style={{ ...textarea, maxHeight: 260, overflow: 'auto' }}>{JSON.stringify(job.result, undefined, 2)}</pre>}
+      </div>}
+    </section>
+
+    <section style={box}>
+      <div style={row}>
+        <label><input type="checkbox" checked={draft.timeLimitEnabled} disabled={!ready} onChange={event => void save({ timeLimitEnabled: event.target.checked })} /> {t('settings.timeLimit')}</label>
+        <input type="number" min={1} max={1440} value={draft.timeLimitMinutes} disabled={!ready}
+          style={{ width: 90 }} onChange={event => edit({ timeLimitMinutes: Number(event.target.value) })}
+          onBlur={() => void save({ timeLimitMinutes: draft.timeLimitMinutes })} />
+        <span style={note}>{t('settings.minutes')}</span>
+      </div>
+      <p style={note}>{t('settings.timeLimitHint')}</p>
     </section>
 
     <section style={box}>

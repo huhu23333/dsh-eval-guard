@@ -9,7 +9,8 @@ import { spawn } from 'node:child_process'
 import type { Context } from '@deepseek-ai/cordis'
 import {
   CHECK_ROUTE, EVENTS_ROUTE, INSTALL_ROUTE, MANUAL_ROUTE, PROMPT_ROUTE, REVEAL_ROUTE,
-  STATE_ROUTE, TANK_TASK, type CheckResult, type GuardState, type ManualPaths,
+  STATE_ROUTE, TANK_TASK, JOBS_ROUTE, JOB_ROUTE, JOB_CANCEL_ROUTE, EVAL_ROUTE,
+  type CheckResult, type GuardState, type ManualPaths, type JobDetail, PIP_MIRRORS,
 } from './shared.ts'
 import type { Guard } from './guard.ts'
 import { TASKS, type TaskService } from './task.ts'
@@ -74,6 +75,7 @@ export function registerRoutes(ctx: Context, guard: Guard, tasks: TaskService): 
           generatedDefault: guard.configuration.toolBlacklistUseDefault,
           workspaceRoot: dshHome(),
           runsRoot: path.join(guardRoot(), 'runs'),
+          pipMirrors: [...PIP_MIRRORS],
         }
         return json(state)
       },
@@ -89,12 +91,58 @@ export function registerRoutes(ctx: Context, guard: Guard, tasks: TaskService): 
     add({
       path: INSTALL_ROUTE, methods: ['POST'], requestBody: 'buffered',
       fetch: async (request: Request): Promise<Response> => {
+        let body: { workspaceId?: unknown; task?: unknown; cloneSource?: unknown; customCloneUrl?: unknown; pipIndex?: unknown; customPipUrl?: unknown; gitProxyUrl?: unknown; pipProxyUrl?: unknown } = {}
+        try { body = await request.json() as typeof body } catch { return json({ error: 'invalid body' }, 400) }
+        const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : ''
+        const taskId = typeof body.task === 'string' && body.task !== '' ? body.task : TANK_TASK
+        if (workspaceId === '') return json({ error: 'workspaceId is required' }, 400)
+        const config = guard.configuration
+        return json(tasks.startInstall(workspaceId, taskId, {
+          cloneSource: typeof body.cloneSource === 'string' ? body.cloneSource : config.cloneSource,
+          customCloneUrl: typeof body.customCloneUrl === 'string' ? body.customCloneUrl : config.customCloneUrl,
+          pipIndex: typeof body.pipIndex === 'string' ? body.pipIndex : config.pipIndex,
+          customPipUrl: typeof body.customPipUrl === 'string' ? body.customPipUrl : config.customPipUrl,
+          gitProxyUrl: typeof body.gitProxyUrl === 'string' ? body.gitProxyUrl : config.gitProxyUrl,
+          pipProxyUrl: typeof body.pipProxyUrl === 'string' ? body.pipProxyUrl : config.pipProxyUrl,
+        }))
+      },
+    })
+    add({
+      path: EVAL_ROUTE, methods: ['POST'], requestBody: 'buffered',
+      fetch: async (request: Request): Promise<Response> => {
         let body: { workspaceId?: unknown; task?: unknown } = {}
         try { body = await request.json() as typeof body } catch { return json({ error: 'invalid body' }, 400) }
         const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : ''
         const taskId = typeof body.task === 'string' && body.task !== '' ? body.task : TANK_TASK
         if (workspaceId === '') return json({ error: 'workspaceId is required' }, 400)
-        return json(tasks.install(workspaceId, taskId))
+        return json(tasks.startEval(workspaceId, taskId))
+      },
+    })
+    add({
+      path: JOBS_ROUTE, methods: ['GET'], requestBody: 'buffered',
+      fetch: async (request: Request): Promise<Response> => {
+        const workspaceId = query(request, 'workspaceId')
+        const taskId = query(request, 'task')
+        return json(tasks.jobs.list(workspaceId === '' ? undefined : workspaceId, taskId === '' ? undefined : taskId))
+      },
+    })
+    add({
+      path: JOB_ROUTE, methods: ['GET'], requestBody: 'buffered',
+      fetch: async (request: Request): Promise<Response> => {
+        const jobId = query(request, 'id')
+        const job: JobDetail | undefined = tasks.jobs.get(jobId)
+        return job === undefined ? json({ error: 'job not found' }, 404) : json(job)
+      },
+    })
+    add({
+      path: JOB_CANCEL_ROUTE, methods: ['POST'], requestBody: 'buffered',
+      fetch: async (request: Request): Promise<Response> => {
+        let body: { id?: unknown } = {}
+        try { body = await request.json() as typeof body } catch { return json({ error: 'invalid body' }, 400) }
+        const jobId = typeof body.id === 'string' ? body.id : ''
+        if (jobId === '') return json({ error: 'id is required' }, 400)
+        const job = tasks.jobs.cancel(jobId)
+        return job === undefined ? json({ error: 'job not found' }, 404) : json(job)
       },
     })
     add({

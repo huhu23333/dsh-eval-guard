@@ -6,3 +6,6 @@ lib/
 .ptc-test-*
 .runtime-test-*
 test/dist/
+eval/**/__pycache__/
+eval/arena/*/workspace/build/
+eval/arena/*/workspace/submission/

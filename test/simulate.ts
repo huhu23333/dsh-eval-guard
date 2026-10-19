@@ -137,6 +137,39 @@ for (const listener of listeners.get('session/event') ?? []) {
   listener(fakeSession, { type: 'tool/call', data: {} })
   listener(fakeSession, { type: 'turn/end', data: { reason: { kind: 'completed' } } })
 }
+
+// A config update must not reset already-running per-session deadlines.
+agent.status = 'running'
+const deadlineMap = (guard as any).deadlines as Map<string, number>
+deadlineMap.set('m1', 1111)
+deadlineMap.set('m2', 2222)
+const originalMinutes = rawConfig.timeLimitMinutes
+rawConfig.timeLimitMinutes = { get: () => 91 }
+;(guard as any).syncConfig()
+assert.equal(deadlineMap.get('m1'), 1111)
+assert.equal(deadlineMap.get('m2'), 2222)
+rawConfig.timeLimitMinutes = originalMinutes
+const originalTimeLimit = rawConfig.timeLimitEnabled
+rawConfig.timeLimitEnabled = { get: () => false }
+;(guard as any).syncConfig()
+assert.equal(deadlineMap.get('m1'), 1111)
+assert.equal(deadlineMap.get('m2'), 2222)
+deadlineMap.delete('m-off')
+;(guard as any).arm('m-off')
+assert.equal(deadlineMap.has('m-off'), false)
+rawConfig.timeLimitEnabled = originalTimeLimit
+;(guard as any).arm('m-on')
+assert.equal(deadlineMap.has('m-on'), true)
+rawConfig.timeLimitEnabled = { get: () => false }
+deadlineMap.set('m1', 3333)
+deadlineMap.set('m2', 4444)
+for (const listener of listeners.get('session/event') ?? []) {
+  listener(fakeSession, { type: 'user/message', data: { source: { kind: 'user' } } })
+}
+assert.equal(deadlineMap.has('m1'), false)
+assert.equal(deadlineMap.get('m2'), 4444)
+rawConfig.timeLimitEnabled = originalTimeLimit
+agent.status = 'idle'
 const usage = JSON.parse(fs.readFileSync(path.join(guardRoot(), 'runs', installed.runId as string, 'usage.json'), 'utf8'))
 assert.equal(usage.inputTokens, 10)
 assert.equal(usage.outputTokens, 2)

@@ -58,6 +58,14 @@ export interface TaskDefinition {
   label: string
   description: string
   asset: string
+  /** Optional host-side setup run after the task asset is copied into the workspace. */
+  prepare?: (workspacePath: string) => void
+  /** Defaults applied by the settings page when this task is selected. */
+  timeLimitMinutes: number
+  timeLimitEnabled: boolean
+  needsSetup: boolean
+  repoUrl?: string
+  remotes?: import('./shared.ts').TaskRemote[]
   prompt: (blacklist: readonly string[], options: { source: string; workspacePath: string; minutes: number }) => string
 }
 
@@ -139,6 +147,12 @@ export class Guard {
       forbiddenPaths: read('forbiddenPaths') as string,
       toolBlacklistUseDefault: read('toolBlacklistUseDefault') as boolean,
       toolBlacklist: read('toolBlacklist') as string,
+      cloneSource: read('cloneSource') as string,
+      customCloneUrl: read('customCloneUrl') as string,
+      pipIndex: read('pipIndex') as string,
+      customPipUrl: read('customPipUrl') as string,
+      gitProxyUrl: read('gitProxyUrl') as string,
+      pipProxyUrl: read('pipProxyUrl') as string,
     })
   }
 
@@ -155,8 +169,6 @@ export class Guard {
     const wasEnabled = this.enabled
     if (!wasEnabled && next.enabled) void this.enable()
     else if (wasEnabled && !next.enabled) this.disable()
-    else if (this.enabled && !next.timeLimitEnabled) this.deadlines.clear()
-    else if (this.enabled && next.timeLimitEnabled) this.rearmRunning()
   }
 
   /** Whether the guard is active. */
@@ -277,7 +289,6 @@ export class Guard {
       return { ...resolved, mode: 'workspace-write' }
     }
     this.enabled = true
-    this.rearmRunning()
     for (const agent of this.services.agents.list()) {
       if (this.isMain(agent.session)) this.forceApproval(agent.session)
     }
@@ -294,18 +305,6 @@ export class Guard {
     for (const sessionId of [...this.approvalPrev.keys()]) this.restoreApproval(sessionId)
     this.deadlines.clear()
     this.record({ kind: 'notice', detail: '评测守护已停用。' })
-  }
-
-  /** Re-arm deadlines for running main conversations after an enable/config change. */
-  private rearmRunning(): void {
-    if (!this.enabled || !this.configuration.timeLimitEnabled) return
-    for (const agent of this.services.agents.list()) {
-      if (!this.isMain(agent.session)) continue
-      const jobs = (this.services.jobs?.list(agent.id) ?? []).filter(job => job.status === 'running' || job.status === 'stopping')
-      if (agent.status === 'running' || jobs.length > 0) {
-        this.arm(agent.session.id)
-      }
-    }
   }
 
   /** Set the deadline for one session. */
@@ -370,7 +369,13 @@ export class Guard {
       const source = event.data?.source
       if (source?.kind === 'user') {
         this.startedAt.set(session.id, Date.now())
-        this.arm(session.id)
+        if (this.configuration.timeLimitEnabled) {
+          this.arm(session.id)
+        } else {
+          // This session's new message was sent while the limit is off: it is
+          // now unlimited, without touching any other session's deadline.
+          this.deadlines.delete(session.id)
+        }
       }
     } else if (event.type === 'assistant/message') {
       const usage = event.data?.usage

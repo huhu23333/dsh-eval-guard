@@ -1,0 +1,202 @@
+{
+ "title": "终场赛（下半场版本）",
+ "kit": "../workspace",
+ "build_dir": "../workspace/build",
+ "out": "run-final",
+ "players": {
+  "Astra": "../bots/half2/gpt-6-astra.cpp",
+  "Opus": "../bots/half2/opus-5.5.cpp",
+  "Haiku": "../bots/half2/haiku-5.5.cpp",
+  "Sol": "../bots/half2/gpt-6.1-sol.cpp",
+  "GLM": "../bots/half2/glm-5.3.cpp",
+  "MiMo": "../bots/half2/mimo-v2.6-pro.cpp",
+  "Doubao": "../bots/half2/doubao-seed-evolving.cpp",
+  "DeepSeek": "../bots/half2/deepseek-v4.1-flash.cpp",
+  "Muse": "../bots/half2/muse-wonder-full.cpp",
+  "Grok": "../bots/half2/grok-4.7.cpp",
+  "Qwen": "../bots/half2/qwen-3.8-max.cpp",
+  "Kimi": "../bots/half2/kimi-k3.cpp",
+  "SolUF": "../bots/half2/gpt-6.1-sol-ultrafast.cpp",
+  "Gemini": "../bots/half2/gemini-4-argon.cpp",
+  "baseline": "../workspace/baseline.cpp",
+  "sparring": "sparring.cpp"
+ },
+ "maps_per_pair": 60,
+ "workers": 0,
+ "pin": {
+  "mode": "big"
+ },
+ "speed": {
+  "enabled": true,
+  "tolerance": 0.15,
+  "repeat": 3
+ },
+ "boot": 1000,
+ "labels": {
+  "baseline": "基准",
+  "sparring": "出题方参照"
+ },
+ "display": {
+  "Astra": "GPT-6 Astra",
+  "Opus": "Claude Opus 5.5",
+  "Haiku": "Claude Haiku 5.5",
+  "Sol": "GPT-6.1 Sol",
+  "GLM": "智谱 GLM 5.3",
+  "MiMo": "小米 MiMo V2.6 Pro",
+  "Doubao": "Doubao-Seed-Evolving",
+  "DeepSeek": "DeepSeek V4.1 Flash",
+  "Muse": "Muse Wonder Full",
+  "Grok": "Grok 4.7",
+  "Qwen": "通义千问 Qwen 3.8 Max",
+  "Kimi": "Kimi K3",
+  "SolUF": "GPT-6.1 Sol Ultrafast（Codex CLI）",
+  "Gemini": "Gemini 4 Argon Contributor（OpenCode Go）"
+ },
+ "substitutes": {
+  "Astra": [
+   {
+    "path": "../bots/half1/gpt-6-astra.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "Opus": [
+   {
+    "path": "../bots/half1/opus-5.5.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "Haiku": [
+   {
+    "path": "../bots/half1/haiku-5.5.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "Sol": [
+   {
+    "path": "../bots/half1/gpt-6.1-sol.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "GLM": [
+   {
+    "path": "../bots/half1/glm-5.3.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "MiMo": [
+   {
+    "path": "../bots/half1/mimo-v2.6-pro.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "Doubao": [
+   {
+    "path": "../bots/half1/doubao-seed-evolving.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "DeepSeek": [
+   {
+    "path": "../bots/half1/deepseek-v4.1-flash.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "Muse": [
+   {
+    "path": "../bots/half1/muse-wonder-full.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "Grok": [
+   {
+    "path": "../bots/half1/grok-4.7.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "Qwen": [
+   {
+    "path": "../bots/half1/qwen-3.8-max.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "Kimi": [
+   {
+    "path": "../bots/half1/kimi-k3.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "SolUF": [
+   {
+    "path": "../bots/half1/gpt-6.1-sol-ultrafast.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ],
+  "Gemini": [
+   {
+    "path": "../bots/half1/gemini-4-argon.cpp",
+    "label": "这位选手自己的上半场版本"
+   },
+   {
+    "path": "../workspace/submission/bot.cpp",
+    "label": "模板"
+   }
+  ]
+ },
+ "anchor": "baseline",
+ "unranked": [
+  "sparring"
+ ],
+ "seed": 98844725665670
+}

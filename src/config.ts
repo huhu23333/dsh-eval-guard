@@ -19,6 +19,18 @@ export interface Config {
   toolBlacklistUseDefault: boolean
   /** The user's blacklist document, one tool name per line. */
   toolBlacklist: string
+  /** Preferred clone source for host-side benchmark setup. */
+  cloneSource: string
+  /** Custom clone URL prefix when cloneSource is custom. */
+  customCloneUrl: string
+  /** Preferred pip index for host-side benchmark setup. */
+  pipIndex: string
+  /** Custom pip index URL when pipIndex is custom. */
+  customPipUrl: string
+  /** Optional proxy used only for git clone/fetch, e.g. 127.0.0.1:7897. */
+  gitProxyUrl: string
+  /** Optional proxy used only for pip installs, e.g. 127.0.0.1:7897. */
+  pipProxyUrl: string
 }
 
 /** Factory defaults. */
@@ -29,6 +41,12 @@ export const DEFAULT_CONFIG: Config = {
   forbiddenPaths: '',
   toolBlacklistUseDefault: true,
   toolBlacklist: '',
+  cloneSource: 'github',
+  customCloneUrl: '',
+  pipIndex: 'pypi',
+  customPipUrl: '',
+  gitProxyUrl: '',
+  pipProxyUrl: '',
 }
 
 /** The exported schema; the Loader row id is also this document's namespace. */
@@ -39,6 +57,12 @@ export const Config = z.object({
   forbiddenPaths: z.string().default('').volatile(),
   toolBlacklistUseDefault: z.boolean().default(true).volatile(),
   toolBlacklist: z.string().default('').volatile(),
+  cloneSource: z.string().default('github').volatile(),
+  customCloneUrl: z.string().default('').volatile(),
+  pipIndex: z.string().default('pypi').volatile(),
+  customPipUrl: z.string().default('').volatile(),
+  gitProxyUrl: z.string().default('').volatile(),
+  pipProxyUrl: z.string().default('').volatile(),
 })
 
 /** Clamp and normalize a live configuration object. */
@@ -51,5 +75,11 @@ export function resolveConfig(value: Partial<Config> | undefined): Config {
     forbiddenPaths: typeof value?.forbiddenPaths === 'string' ? value.forbiddenPaths : '',
     toolBlacklistUseDefault: value?.toolBlacklistUseDefault !== false,
     toolBlacklist: typeof value?.toolBlacklist === 'string' ? value.toolBlacklist : '',
+    cloneSource: typeof value?.cloneSource === 'string' && value.cloneSource !== '' ? value.cloneSource : 'github',
+    customCloneUrl: typeof value?.customCloneUrl === 'string' ? value.customCloneUrl : '',
+    pipIndex: typeof value?.pipIndex === 'string' && value.pipIndex !== '' ? value.pipIndex : 'pypi',
+    customPipUrl: typeof value?.customPipUrl === 'string' ? value.customPipUrl : '',
+    gitProxyUrl: typeof value?.gitProxyUrl === 'string' ? value.gitProxyUrl : '',
+    pipProxyUrl: typeof value?.pipProxyUrl === 'string' ? value.pipProxyUrl : '',
   }
 }
