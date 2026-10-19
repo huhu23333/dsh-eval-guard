@@ -10,7 +10,8 @@ import {
   TANK_TASK, TANK_TASK_LABEL, WAREHOUSE_TASK, WAREHOUSE_TASK_LABEL,
   LAND_TASK, LAND_TASK_LABEL, BOMBERMAN_TASK, BOMBERMAN_TASK_LABEL, CTF_TASK, CTF_TASK_LABEL,
   COMMIT0_TASK, COMMIT0_TASK_LABEL, SWE_BENCH_PRO_TASK, SWE_BENCH_PRO_TASK_LABEL,
-  FEATUREBENCH_TASK, FEATUREBENCH_TASK_LABEL, NEURAL_CPP_TASK, NEURAL_CPP_TASK_LABEL, PIP_MIRRORS,
+  FEATUREBENCH_TASK, FEATUREBENCH_TASK_LABEL, NEURAL_CPP_TASK, NEURAL_CPP_TASK_LABEL,
+  NEURAL_FP32_TASK, NEURAL_FP32_TASK_LABEL, PIP_MIRRORS,
   type CheckResult, type InstallResult, type RunRecord, type TaskInfo,
 } from './shared.ts'
 import type { Guard, TaskDefinition } from './guard.ts'
@@ -29,6 +30,7 @@ export const TASKS: readonly TaskInfo[] = [
   { id: SWE_BENCH_PRO_TASK, label: SWE_BENCH_PRO_TASK_LABEL, description: 'SWE-Bench Pro 单任务：在真实仓库中修复一个多文件 issue，隐藏测试评分。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true, repoUrl: 'https://github.com/ansible/ansible', remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/ansible/ansible.git' }, { id: 'gitee', label: 'Gitee 镜像', url: 'https://gitee.com/mirrors/ansible.git' }] },
   { id: FEATUREBENCH_TASK, label: FEATUREBENCH_TASK_LABEL, description: 'FeatureBench 单 feature：实现一个跨文件功能，隐藏测试评分。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true, repoUrl: 'https://github.com/mwaskom/seaborn', remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/mwaskom/seaborn.git' }, { id: 'gitee', label: 'Gitee 镜像', url: 'https://gitee.com/mirrors/seaborn.git' }, { id: 'gitcode', label: 'GitCode 镜像', url: 'https://gitcode.com/gh_mirrors/se/seaborn.git' }] },
   { id: NEURAL_CPP_TASK, label: NEURAL_CPP_TASK_LABEL, description: '从零实现纯 C++ 张量运算与反向传播后端；隐藏测试统计正确性与速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
+  { id: NEURAL_FP32_TASK, label: NEURAL_FP32_TASK_LABEL, description: '从零实现纯 C++ FP32 神经网络算子、反向传播与优化器 CLI；逐操作统计误差和速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
 ]
 
 /** The tank task definition (original prompt; only halftime mechanics removed). */
@@ -258,6 +260,32 @@ export const NEURAL_CPP_DEFINITION: TaskDefinition = {
   },
 }
 
+/** FP32 operator/performance task. */
+export const NEURAL_FP32_DEFINITION: TaskDefinition = {
+  id: NEURAL_FP32_TASK,
+  label: NEURAL_FP32_TASK_LABEL,
+  description: TASKS[9]!.description,
+  asset: path.join(packageRoot(), 'assets', 'neural-fp32', 'workspace.zip'),
+  timeLimitMinutes: 1440,
+  timeLimitEnabled: false,
+  needsSetup: true,
+  prompt() {
+    return [
+      '这是一个从零实现的纯 C++ FP32 神经网络算子与性能任务：实现 forward、反向传播、损失和优化器更新，并提供一个固定 CLI 供评测调用；不提供 Python 或 OpenCL 支持。',
+      '',
+      '当前 workspace 已经由安装器准备好：包含 TASK.md 和 CMakeLists.txt。请阅读 TASK.md 的 CLI 协议，实现 src/ 下的程序，构建出 build/nn_task。',
+      '',
+      '要求：',
+      '- 仅使用 Linux + GCC + C++17 标准库；不允许引入第三方依赖；',
+      '- 所有输入输出均为 little-endian float32；',
+      '- 开发/自测阶段线程数最多 4；评测阶段会使用全部逻辑 CPU；',
+      '- 数值参考由评测侧 PyTorch 在相同数据上计算，不要伪造结果；',
+      '- 评测会独立统计每个操作的可执行性、加权平均相对误差和速度；',
+      '- 完成后用几句话总结实现了哪些操作和性能优化。',
+    ].join('\n')
+  },
+}
+
 /** All task definitions keyed by id. */
 export const TASK_DEFINITIONS: Readonly<Record<string, TaskDefinition>> = {
   [TANK_TASK]: TANK_DEFINITION,
@@ -269,6 +297,7 @@ export const TASK_DEFINITIONS: Readonly<Record<string, TaskDefinition>> = {
   [SWE_BENCH_PRO_TASK]: SWE_BENCH_PRO_DEFINITION,
   [FEATUREBENCH_TASK]: FEATUREBENCH_DEFINITION,
   [NEURAL_CPP_TASK]: NEURAL_CPP_DEFINITION,
+  [NEURAL_FP32_TASK]: NEURAL_FP32_DEFINITION,
 }
 
 /** Install, check, and prompt services for the task packs. */

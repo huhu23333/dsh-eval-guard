@@ -39,6 +39,8 @@ export const FEATUREBENCH_TASK = 'featurebench'
 export const FEATUREBENCH_TASK_LABEL = 'FeatureBench · 单 feature'
 export const NEURAL_CPP_TASK = 'neural-cpp'
 export const NEURAL_CPP_TASK_LABEL = 'Neural-CPP · 纯 C++ 张量后端'
+export const NEURAL_FP32_TASK = 'neural-fp32'
+export const NEURAL_FP32_TASK_LABEL = 'Neural-FP32 · 运算与性能'
 
 /** One validated clone remote for a task. */
 export interface TaskRemote {

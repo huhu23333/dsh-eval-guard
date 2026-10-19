@@ -25,18 +25,21 @@
 | SWE-Bench Pro 单任务 | 1440 分钟，默认关闭 |
 | FeatureBench 单 feature | 1440 分钟，默认关闭 |
 | Neural-CPP 纯 C++ 张量后端 | 1440 分钟，默认关闭 |
+| Neural-FP32 纯 C++ 运算与性能 | 1440 分钟，默认关闭 |
 
 ## 任务与安装
 
-设置页可安装九个任务包：
+设置页可安装十个任务包：
 
 - 原 5 个比赛任务：坦克大战、仓储调度、圈地、炸弹人、夺旗。
 - 3 个长时单任务：Commit0 单库实现、SWE-Bench Pro 单任务、FeatureBench 单 feature。
-- 1 个纯 C++ 项目：Neural-CPP 张量运算与反向传播后端。
+- 2 个纯 C++ 项目：Neural-CPP 张量后端、Neural-FP32 运算与性能。
 
 Neural-CPP 安装时自动把 workspace.zip 解压到工作区根目录，并在完成后移除 setup.sh；agent 从根目录的 CMakeLists.txt 开始。工作区只包含 TASK.md、CMakeLists.txt 和 include/nn/nn.hpp；实现在 src/ 中从零完成，纯 C++17，无 Python/OpenCL/第三方库。
 
 评测器同时兼容旧安装留下的嵌套布局：若根目录没有 CMakeLists.txt，会自动改用 workspace/CMakeLists.txt，避免已经产出的工作区无法评测。
+
+Neural-FP32 是独立的新任务：固定 fp32，不做完整训练；agent 从零实现 `build/nn_task` CLI，覆盖逐元素、matmul、linear、relu、softmax、layernorm、mse、conv2d、对应反向传播、AdamW 和 SGD momentum。评测侧用 PyTorch 在相同数据和参数上计算参考值，逐操作输出可执行性、是否通过误差阈值、加权平均相对误差、速度，并在最前面给出是否所有操作可执行、最大加权平均相对误差和速度几何平均；不提供统一 score，速度不受误差门控影响。
 
 评测时在临时目录独立构建，然后从 assets/neural-cpp/hidden/ 注入 C++ 测试源码；测试数据由固定种子在进程内生成，不依赖或复制外部数据文件。
 
@@ -76,11 +79,12 @@ Gitee/GitCode 都使用 git fetch --depth 1 origin <任务 commit> 验证。GitL
 
 设置页安装/评测共用一组任务和工作区选择；「评测当前工作区」只评测一个结果，不生成排行。
 
-插件 eval/ 目录内置全部 9 个任务的单结果评测脚本：
+插件 eval/ 目录内置全部 10 个任务的单结果评测脚本：
 
 - Commit0：单元测试通过率。
 - SWE-Bench Pro / FeatureBench：隐藏 F2P/P2P 测试；全部通过才 resolved，同时返回 passRate。
 - Neural-CPP：独立编译隐藏 C++ 测试，返回 accuracy 与 matmul speedGflops；数据在测试进程内按固定种子生成。
+- Neural-FP32：调用候选 build/nn_task，用 PyTorch 参考值统计每个操作的 MRE 和速度；汇总项在最前面，不输出统一 score。
 - Tank / Warehouse / Land / Bomberman / CTF：运行官方引擎/裁判，只返回当前工作区候选者结果，不生成排名。
 
 评测也是后台任务，日志和结果实时显示，持久化在 jobs 目录。
