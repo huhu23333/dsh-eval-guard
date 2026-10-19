@@ -329,6 +329,13 @@ export class TaskService {
     }
   }
 
+  /** Remove install-only artifacts so they are not part of the agent workspace. */
+  private cleanupWorkspace(workspacePath: string): void {
+    for (const name of ['.git', '.repo', 'setup.sh', 'remove.patch', 'spec.pdf.bz2']) {
+      try { fs.rmSync(path.join(workspacePath, name), { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+  }
+
   /** Start a non-blocking install. The settings page polls the returned job. */
   startInstall(workspaceId: string, taskId: string, options: SetupOptions = {}): { ok: boolean; jobId?: string; error?: string } {
     const definition = TASK_DEFINITIONS[taskId]
@@ -354,6 +361,7 @@ export class TaskService {
     const job = this.jobs.start({
       kind: 'install', task: taskId, workspaceId, command, cwd: checked.path, env,
       onSuccess: () => {
+        if (definition.needsSetup) this.cleanupWorkspace(checked.path)
         const runId = this.newRunId()
         const prompt = this.guard.promptFor(checked.path, this.materialZip(taskId), definition)
         const run: RunRecord = {
@@ -421,6 +429,7 @@ export class TaskService {
       fs.copyFileSync(this.materialZip(taskId), path.join(checked.path, 'workspace.zip'))
       if (definition.needsSetup) this.extractMaterial(checked.path)
       if (definition.prepare !== undefined) definition.prepare(checked.path)
+      if (definition.needsSetup) this.cleanupWorkspace(checked.path)
     } catch (error: unknown) {
       return { ok: false, workspaceId, workspacePath: checked.path, error: '任务准备失败：' + (error instanceof Error ? error.message : String(error)) }
     }

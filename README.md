@@ -32,7 +32,7 @@
 - 原 5 个比赛任务：坦克大战、仓储调度、圈地、炸弹人、夺旗。
 - 3 个长时单任务：Commit0 单库实现、SWE-Bench Pro 单任务、FeatureBench 单 feature。
 
-原 5 个任务直接放入打包好的 workspace.zip。后 3 个任务在安装时由 host 侧 setup 脚本按固定 commit clone 仓库、创建 .venv 并安装依赖；agent 运行时仍然禁网，使用工作区内的 .venv 跑测试。
+原 5 个任务直接放入打包好的 workspace.zip。后 3 个任务在安装时由 host 侧 setup 脚本按固定 commit clone 仓库、创建 .venv 并安装依赖；安装完成后会清理 `.git`、`setup.sh`、`remove.patch`、`spec.pdf.bz2` 等安装产物，工作区只保留任务本身素材。Commit0 的 `pytest.ini` 会去掉 coverage 参数，保证默认测试命令在沙箱内可运行。agent 运行时仍然禁网，使用工作区内的 .venv 跑测试；agent 可以自行 `git init` 或写自己的脚本。
 
 安装是后台任务：
 
