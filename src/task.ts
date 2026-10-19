@@ -10,7 +10,7 @@ import {
   TANK_TASK, TANK_TASK_LABEL, WAREHOUSE_TASK, WAREHOUSE_TASK_LABEL,
   LAND_TASK, LAND_TASK_LABEL, BOMBERMAN_TASK, BOMBERMAN_TASK_LABEL, CTF_TASK, CTF_TASK_LABEL,
   COMMIT0_TASK, COMMIT0_TASK_LABEL, SWE_BENCH_PRO_TASK, SWE_BENCH_PRO_TASK_LABEL,
-  FEATUREBENCH_TASK, FEATUREBENCH_TASK_LABEL, PIP_MIRRORS,
+  FEATUREBENCH_TASK, FEATUREBENCH_TASK_LABEL, NEURAL_CPP_TASK, NEURAL_CPP_TASK_LABEL, PIP_MIRRORS,
   type CheckResult, type InstallResult, type RunRecord, type TaskInfo,
 } from './shared.ts'
 import type { Guard, TaskDefinition } from './guard.ts'
@@ -28,6 +28,7 @@ export const TASKS: readonly TaskInfo[] = [
   { id: COMMIT0_TASK, label: COMMIT0_TASK_LABEL, description: 'Commit0 单库实现：按规格从零实现一个 Python 库，单元测试评分。', timeLimitMinutes: 480, timeLimitEnabled: false, needsSetup: true, repoUrl: 'https://github.com/msiemens/tinydb', remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/msiemens/tinydb.git' }] },
   { id: SWE_BENCH_PRO_TASK, label: SWE_BENCH_PRO_TASK_LABEL, description: 'SWE-Bench Pro 单任务：在真实仓库中修复一个多文件 issue，隐藏测试评分。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true, repoUrl: 'https://github.com/ansible/ansible', remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/ansible/ansible.git' }, { id: 'gitee', label: 'Gitee 镜像', url: 'https://gitee.com/mirrors/ansible.git' }] },
   { id: FEATUREBENCH_TASK, label: FEATUREBENCH_TASK_LABEL, description: 'FeatureBench 单 feature：实现一个跨文件功能，隐藏测试评分。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true, repoUrl: 'https://github.com/mwaskom/seaborn', remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/mwaskom/seaborn.git' }, { id: 'gitee', label: 'Gitee 镜像', url: 'https://gitee.com/mirrors/seaborn.git' }, { id: 'gitcode', label: 'GitCode 镜像', url: 'https://gitcode.com/gh_mirrors/se/seaborn.git' }] },
+  { id: NEURAL_CPP_TASK, label: NEURAL_CPP_TASK_LABEL, description: '从零实现纯 C++ 张量运算与反向传播后端；隐藏测试统计正确性与速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: false },
 ]
 
 /** The tank task definition (original prompt; only halftime mechanics removed). */
@@ -232,6 +233,31 @@ export const FEATUREBENCH_DEFINITION: TaskDefinition = {
   },
 }
 
+/** Pure C++ tensor backend task. */
+export const NEURAL_CPP_DEFINITION: TaskDefinition = {
+  id: NEURAL_CPP_TASK,
+  label: NEURAL_CPP_TASK_LABEL,
+  description: TASKS[8]!.description,
+  asset: path.join(packageRoot(), 'assets', 'neural-cpp', 'workspace.zip'),
+  timeLimitMinutes: 1440,
+  timeLimitEnabled: false,
+  needsSetup: false,
+  prompt() {
+    return [
+      '这是一个纯 C++ 张量运算后端任务：从零实现 DType、Tensor、视图/切片、逐元素与矩阵运算、自动求导和线程池；不提供 Python 或 OpenCL 支持。',
+      '',
+      '当前目录有 workspace.zip。请先解压，进入 workspace 目录，阅读 TASK.md 和 include/nn/nn.hpp，按接口约定实现 src/ 下的静态库，并用 CMake 构建。',
+      '',
+      '要求：',
+      '- 仅使用 Linux + GCC + C++17 标准库；不允许引入第三方依赖；',
+      '- 开发/自测阶段线程数最多 4；评测阶段会使用全部逻辑 CPU；',
+      '- 不得修改 include/nn/nn.hpp 的公开接口语义；不要伪造测试或结果；',
+      '- 隐藏测试会独立编译，数据由固定种子在测试时生成；',
+      '- 完成后用几句话总结实现了哪些部分和性能优化。',
+    ].join('\n')
+  },
+}
+
 /** All task definitions keyed by id. */
 export const TASK_DEFINITIONS: Readonly<Record<string, TaskDefinition>> = {
   [TANK_TASK]: TANK_DEFINITION,
@@ -242,6 +268,7 @@ export const TASK_DEFINITIONS: Readonly<Record<string, TaskDefinition>> = {
   [COMMIT0_TASK]: COMMIT0_DEFINITION,
   [SWE_BENCH_PRO_TASK]: SWE_BENCH_PRO_DEFINITION,
   [FEATUREBENCH_TASK]: FEATUREBENCH_DEFINITION,
+  [NEURAL_CPP_TASK]: NEURAL_CPP_DEFINITION,
 }
 
 /** Install, check, and prompt services for the task packs. */

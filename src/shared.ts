@@ -37,6 +37,8 @@ export const SWE_BENCH_PRO_TASK = 'swe-bench-pro'
 export const SWE_BENCH_PRO_TASK_LABEL = 'SWE-Bench Pro · 单任务'
 export const FEATUREBENCH_TASK = 'featurebench'
 export const FEATUREBENCH_TASK_LABEL = 'FeatureBench · 单 feature'
+export const NEURAL_CPP_TASK = 'neural-cpp'
+export const NEURAL_CPP_TASK_LABEL = 'Neural-CPP · 纯 C++ 张量后端'
 
 /** One validated clone remote for a task. */
 export interface TaskRemote {

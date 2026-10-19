@@ -24,13 +24,21 @@
 | Commit0 单库 | 480 分钟，默认关闭 |
 | SWE-Bench Pro 单任务 | 1440 分钟，默认关闭 |
 | FeatureBench 单 feature | 1440 分钟，默认关闭 |
+| Neural-CPP 纯 C++ 张量后端 | 1440 分钟，默认关闭 |
 
 ## 任务与安装
 
-设置页可安装八个任务包：
+设置页可安装九个任务包：
 
 - 原 5 个比赛任务：坦克大战、仓储调度、圈地、炸弹人、夺旗。
 - 3 个长时单任务：Commit0 单库实现、SWE-Bench Pro 单任务、FeatureBench 单 feature。
+- 1 个纯 C++ 项目：Neural-CPP 张量运算与反向传播后端。
+
+Neural-CPP 工作区只包含 TASK.md、CMakeLists.txt 和 include/nn/nn.hpp；实现在 src/ 中从零完成，纯 C++17，无 Python/OpenCL/第三方库。
+
+评测时在临时目录独立构建，然后从 assets/neural-cpp/hidden/ 注入 C++ 测试源码；测试数据由固定种子在进程内生成，不依赖或复制外部数据文件。
+
+结果返回 coreAccuracy（核心 C++ 测试通过率）、matrixAccuracy、逐类型 metrics（f32/int128/MXFP4 的矩阵与反向准确率、平均绝对误差、fwd/bwd 毫秒、fwd/bwd GFLOP/s）、speedGflops，以及按矩阵吞吐计算的 speedGeomeanGflops 和 matrixSizes（f32/i128/MXFP4 均为 256×256×256）。确定性项目使用 4 组独立输入取平均；MXFP4 RNE 和随机舍入分开统计，随机舍入使用 2 组输入×每组 1024 次采样，逐元素比较参考均值/标准差和候选均值/标准差，按 3σ 和 0.1–10× 标准差规则统计正确率。参考值由测试侧独立标量实现先算完，再调用候选实现，参考计算不计入候选耗时。隐藏测试不在工作区，agent 无法读取。开发要求线程数最多 4，评测阶段使用全部逻辑 CPU。
 
 原 5 个任务直接放入打包好的 workspace.zip。后 3 个任务在安装时由 host 侧 setup 脚本按固定 commit clone 仓库、创建 .venv 并安装依赖；安装完成后会清理 `.git`、`setup.sh`、`remove.patch`、`spec.pdf.bz2` 等安装产物，工作区只保留任务本身素材。Commit0 的 `pytest.ini` 会去掉 coverage 参数，保证默认测试命令在沙箱内可运行。agent 运行时仍然禁网，使用工作区内的 .venv 跑测试；agent 可以自行 `git init` 或写自己的脚本。
 
@@ -66,10 +74,11 @@ Gitee/GitCode 都使用 git fetch --depth 1 origin <任务 commit> 验证。GitL
 
 设置页安装/评测共用一组任务和工作区选择；「评测当前工作区」只评测一个结果，不生成排行。
 
-插件 eval/ 目录内置全部 8 个任务的单结果评测脚本：
+插件 eval/ 目录内置全部 9 个任务的单结果评测脚本：
 
 - Commit0：单元测试通过率。
 - SWE-Bench Pro / FeatureBench：隐藏 F2P/P2P 测试；全部通过才 resolved，同时返回 passRate。
+- Neural-CPP：独立编译隐藏 C++ 测试，返回 accuracy 与 matmul speedGflops；数据在测试进程内按固定种子生成。
 - Tank / Warehouse / Land / Bomberman / CTF：运行官方引擎/裁判，只返回当前工作区候选者结果，不生成排名。
 
 评测也是后台任务，日志和结果实时显示，持久化在 jobs 目录。
