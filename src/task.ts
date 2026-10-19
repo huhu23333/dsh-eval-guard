@@ -309,6 +309,26 @@ export class TaskService {
     return TASK_DEFINITIONS[taskId]
   }
 
+  /** Extract a setup task's workspace.zip into the workspace root. */
+  private extractMaterial(workspacePath: string): void {
+    const zip = path.join(workspacePath, 'workspace.zip')
+    if (!fs.existsSync(zip)) throw new Error('workspace.zip is missing')
+    const temp = fs.mkdtempSync(path.join(guardRoot(), 'extract-'))
+    try {
+      execFileSync('unzip', ['-q', zip, '-d', temp], { stdio: 'pipe' })
+      const inner = path.join(temp, 'workspace')
+      const source = fs.existsSync(inner) ? inner : temp
+      for (const entry of fs.readdirSync(source)) {
+        const destination = path.join(workspacePath, entry)
+        if (fs.existsSync(destination)) fs.rmSync(destination, { recursive: true, force: true })
+        fs.renameSync(path.join(source, entry), destination)
+      }
+      fs.rmSync(zip, { force: true })
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true })
+    }
+  }
+
   /** Start a non-blocking install. The settings page polls the returned job. */
   startInstall(workspaceId: string, taskId: string, options: SetupOptions = {}): { ok: boolean; jobId?: string; error?: string } {
     const definition = TASK_DEFINITIONS[taskId]
@@ -319,6 +339,7 @@ export class TaskService {
     if (!this.guard.active) return { ok: false, error: '请先启用评测守护，再安装评测任务。' }
     try {
       fs.copyFileSync(this.materialZip(taskId), path.join(checked.path, 'workspace.zip'))
+      if (definition.needsSetup) this.extractMaterial(checked.path)
     } catch (error: unknown) {
       return { ok: false, error: '复制素材失败：' + (error instanceof Error ? error.message : String(error)) }
     }
@@ -398,6 +419,7 @@ export class TaskService {
     }
     try {
       fs.copyFileSync(this.materialZip(taskId), path.join(checked.path, 'workspace.zip'))
+      if (definition.needsSetup) this.extractMaterial(checked.path)
       if (definition.prepare !== undefined) definition.prepare(checked.path)
     } catch (error: unknown) {
       return { ok: false, workspaceId, workspacePath: checked.path, error: '任务准备失败：' + (error instanceof Error ? error.message : String(error)) }
