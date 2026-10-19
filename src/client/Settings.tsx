@@ -2,7 +2,7 @@
  * Settings panel for the evaluation guard.
  * @module dsh-eval-guard/client/Settings
  */
-import { useEffect, useState, useSyncExternalStore, type CSSProperties, type ReactElement } from 'react'
+import { useEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactElement } from 'react'
 import {
   CHECK_ROUTE, EVENTS_ROUTE, INSTALL_ROUTE, MANUAL_ROUTE, REVEAL_ROUTE, STATE_ROUTE,
   JOBS_ROUTE, JOB_ROUTE, JOB_CANCEL_ROUTE, EVAL_ROUTE,
@@ -100,6 +100,7 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
   const workspaces = evalBridge()?.workspaces() ?? []
   const [job, setJob] = useState<JobDetail | null>(null)
   const [jobNotice, setJobNotice] = useState('')
+  const autoOpenJob = useRef('')
 
   const pollJob = (id: string): void => {
     fetch(JOB_ROUTE + '?id=' + encodeURIComponent(id)).then(readJson<JobDetail>).then(setJob).catch(() => undefined)
@@ -120,6 +121,10 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
   }, [job])
   useEffect(() => { if (job?.status === 'succeeded' && job.kind === 'install' && job.prompt !== undefined) {
     setPrompt(job.prompt); setJobNotice(t('settings.installOk')); loadState()
+    if (autoOpenJob.current === job.id) {
+      autoOpenJob.current = ''
+      evalBridge()?.startSession(job.workspaceId, job.prompt)
+    }
   } }, [job])
   useEffect(() => { loadLatestJob(workspaceId, taskId) }, [workspaceId, taskId])
 
@@ -223,7 +228,8 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
       body: JSON.stringify({ workspaceId, task: taskId, cloneSource: draft.cloneSource, customCloneUrl: draft.customCloneUrl,
         pipIndex: draft.pipIndex, customPipUrl: draft.customPipUrl, gitProxyUrl: draft.gitProxyUrl, pipProxyUrl: draft.pipProxyUrl }),
     }).then(readJson<{ ok: boolean; jobId?: string; error?: string }>)
-    if (!result.ok || result.jobId === undefined) { setError(result.error ?? '安装失败'); return }
+    if (!result.ok || result.jobId === undefined) { autoOpenJob.current = ''; setError(result.error ?? '安装失败'); return }
+    autoOpenJob.current = result.jobId
     pollJob(result.jobId)
   }
 
