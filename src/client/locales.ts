@@ -109,6 +109,7 @@ export const en: Record<Key, string> = {
   'settings.gitProxy': 'Git proxy',
   'settings.pipProxy': 'pip proxy',
   'settings.cifarProxy': 'CIFAR download proxy',
+  'settings.cifarMirror': 'CIFAR download mirror',
   'settings.loading': 'Loading…',
   'settings.recent': 'Recent events',
   'settings.none': 'None.',

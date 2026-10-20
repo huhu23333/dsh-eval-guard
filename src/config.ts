@@ -33,6 +33,10 @@ export interface Config {
   pipProxyUrl: string
   /** Optional proxy used only for CIFAR-10 downloads, e.g. 127.0.0.1:7897. */
   cifarProxyUrl: string
+  /** CIFAR-10 download mirror id, or custom. */
+  cifarMirror: string
+  /** Custom CIFAR-10 binary tar.gz URL. */
+  customCifarUrl: string
 }
 
 /** Factory defaults. */
@@ -50,6 +54,8 @@ export const DEFAULT_CONFIG: Config = {
   gitProxyUrl: '',
   pipProxyUrl: '',
   cifarProxyUrl: '',
+  cifarMirror: 'toronto',
+  customCifarUrl: '',
 }
 
 /** The exported schema; the Loader row id is also this document's namespace. */
@@ -67,6 +73,8 @@ export const Config = z.object({
   gitProxyUrl: z.string().default('').volatile(),
   pipProxyUrl: z.string().default('').volatile(),
   cifarProxyUrl: z.string().default('').volatile(),
+  cifarMirror: z.string().default('toronto').volatile(),
+  customCifarUrl: z.string().default('').volatile(),
 })
 
 /** Clamp and normalize a live configuration object. */
@@ -86,5 +94,7 @@ export function resolveConfig(value: Partial<Config> | undefined): Config {
     gitProxyUrl: typeof value?.gitProxyUrl === 'string' ? value.gitProxyUrl : '',
     pipProxyUrl: typeof value?.pipProxyUrl === 'string' ? value.pipProxyUrl : '',
     cifarProxyUrl: typeof value?.cifarProxyUrl === 'string' ? value.cifarProxyUrl : '',
+    cifarMirror: typeof value?.cifarMirror === 'string' && value.cifarMirror !== '' ? value.cifarMirror : 'toronto',
+    customCifarUrl: typeof value?.customCifarUrl === 'string' ? value.customCifarUrl : '',
   }
 }

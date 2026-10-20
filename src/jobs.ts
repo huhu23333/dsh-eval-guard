@@ -13,6 +13,8 @@ interface StartOptions {
   cwd: string
   env?: Record<string, string>
   onSuccess?: (job: JobDetail) => { prompt?: string; runId?: string; result?: unknown } | void
+  onCancel?: (job: JobDetail) => void
+  onFailure?: (job: JobDetail) => void
 }
 
 interface Stored extends JobInfo {
@@ -33,6 +35,7 @@ export class JobManager {
   private readonly root: string
   private readonly jobs = new Map<string, Stored>()
   private readonly children = new Map<string, ChildProcess>()
+  private readonly cancelHandlers = new Map<string, (job: JobDetail) => void>()
 
   constructor() {
     this.root = path.join(guardRoot(), 'jobs')
@@ -88,6 +91,7 @@ export class JobManager {
       return this.info(job)
     }
     this.children.set(jobId, child)
+    if (options.onCancel !== undefined) this.cancelHandlers.set(jobId, options.onCancel)
     const append = (chunk: Buffer): void => {
       try { fs.appendFileSync(logFile, chunk) } catch { /* log write must not crash the host */ }
     }
@@ -98,6 +102,7 @@ export class JobManager {
     })
     child.on('exit', (code, signal) => {
       this.children.delete(jobId)
+      this.cancelHandlers.delete(jobId)
       if (job.status === 'cancelled') return
       if (code === 0) {
         try {
@@ -117,10 +122,12 @@ export class JobManager {
         } catch (error) {
           job.status = 'failed'
           job.error = error instanceof Error ? error.message : String(error)
+          try { options.onFailure?.(this.detail(jobId)) } catch { /* failure cleanup is best effort */ }
         }
       } else {
         job.status = 'failed'
         job.error = signal !== null ? '进程被信号 ' + signal + ' 终止' : '退出码 ' + String(code)
+        try { options.onFailure?.(this.detail(jobId)) } catch { /* failure cleanup is best effort */ }
       }
       job.endedAt = now(); job.updatedAt = now(); this.write(job)
     })
@@ -134,8 +141,28 @@ export class JobManager {
     if (job.status !== 'running' && job.status !== 'queued') return this.info(job)
     job.status = 'cancelled'; job.endedAt = now(); job.updatedAt = now(); job.error = '用户取消'; this.write(job)
     const child = this.children.get(jobId)
+    const handler = this.cancelHandlers.get(jobId)
+    this.cancelHandlers.delete(jobId)
+    let cleaned = false
+    const cleanup = (): void => {
+      if (cleaned) return
+      cleaned = true
+      if (handler !== undefined) {
+        try { handler(this.detail(jobId)) } catch { /* cancellation cleanup is best effort */ }
+      }
+    }
     if (child?.pid !== undefined) {
+      child.once('exit', cleanup)
       try { process.kill(-child.pid, 'SIGTERM') } catch { try { child.kill('SIGTERM') } catch { /* gone */ } }
+      // If a child ignores SIGTERM, force the process group down and still
+      // perform the workspace cleanup instead of leaving a partial install.
+      setTimeout(() => {
+        if (cleaned) return
+        try { process.kill(-child.pid!, 'SIGKILL') } catch { try { child.kill('SIGKILL') } catch { /* gone */ } }
+        cleanup()
+      }, 2000).unref?.()
+    } else {
+      cleanup()
     }
     return this.info(job)
   }

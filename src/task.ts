@@ -4,6 +4,7 @@
  * @module dsh-eval-guard/task
  */
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import {
@@ -11,7 +12,8 @@ import {
   LAND_TASK, LAND_TASK_LABEL, BOMBERMAN_TASK, BOMBERMAN_TASK_LABEL, CTF_TASK, CTF_TASK_LABEL,
   COMMIT0_TASK, COMMIT0_TASK_LABEL, SWE_BENCH_PRO_TASK, SWE_BENCH_PRO_TASK_LABEL,
   FEATUREBENCH_TASK, FEATUREBENCH_TASK_LABEL, NEURAL_CPP_TASK, NEURAL_CPP_TASK_LABEL,
-  NEURAL_FP32_TASK, NEURAL_FP32_TASK_LABEL, NEURAL_CIFAR_TASK, NEURAL_CIFAR_TASK_LABEL, PIP_MIRRORS,
+  NEURAL_FP32_TASK, NEURAL_FP32_TASK_LABEL, NEURAL_CIFAR_TASK, NEURAL_CIFAR_TASK_LABEL,
+  PIP_MIRRORS, CIFAR_MIRRORS,
   type CheckResult, type InstallResult, type RunRecord, type TaskInfo,
 } from './shared.ts'
 import type { Guard, TaskDefinition } from './guard.ts'
@@ -347,6 +349,8 @@ export interface SetupOptions {
   gitProxyUrl?: string
   pipProxyUrl?: string
   cifarProxyUrl?: string
+  cifarMirror?: string
+  customCifarUrl?: string
 }
 
 export class TaskService {
@@ -377,6 +381,13 @@ export class TaskService {
     const value = (raw ?? '').trim()
     if (value === '') return ''
     return /^[a-z][a-z0-9+.-]*:\/\//i.test(value) ? value : 'http://' + value
+  }
+
+  /** The CIFAR-10 binary archive URL for the selected mirror. */
+  cifarUrl(options: SetupOptions): string {
+    const mirror = options.cifarMirror ?? 'toronto'
+    if (mirror === 'custom') return (options.customCifarUrl ?? '').trim() || CIFAR_MIRRORS[0]!.url
+    return CIFAR_MIRRORS.find(item => item.id === mirror)?.url ?? CIFAR_MIRRORS[0]!.url
   }
 
   /** The pip index URL for a task, honouring the selected mirror. */
@@ -431,6 +442,25 @@ export class TaskService {
     }
   }
 
+  /** Remove every entry created by an install that never reached success. */
+  private wipeInstallWorkspace(workspacePath: string): void {
+    try {
+      for (const entry of fs.readdirSync(workspacePath)) {
+        fs.rmSync(path.join(workspacePath, entry), { recursive: true, force: true })
+      }
+    } catch { /* best effort */ }
+  }
+
+  /** Remove the shared CIFAR lock only when it belongs to this install. */
+  private cleanupCifarLock(token: string): void {
+    const lock = path.join(os.homedir(), '.dsh', 'eval-guard', 'cache', 'cifar10', '.download.lock')
+    try {
+      if (!fs.existsSync(lock)) return
+      const body = fs.readFileSync(lock, 'utf8')
+      if (body.includes('token=' + token)) fs.rmSync(lock, { force: true })
+    } catch { /* best effort */ }
+  }
+
   /** Start a non-blocking install. The settings page polls the returned job. */
   startInstall(workspaceId: string, taskId: string, options: SetupOptions = {}): { ok: boolean; jobId?: string; error?: string } {
     const definition = TASK_DEFINITIONS[taskId]
@@ -439,23 +469,37 @@ export class TaskService {
     if (!checked.ok) return { ok: false, error: checked.error }
     if (!checked.empty) return { ok: false, error: '工作区不是空的；未执行任何操作。' }
     if (!this.guard.active) return { ok: false, error: '请先启用评测守护，再安装评测任务。' }
+    const initiallyEmpty = checked.empty
+    const installToken = 'install-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10)
+    const cleanupInstall = (): void => {
+      // A successful install can make the workspace non-empty; only the
+      // snapshot taken before install decides whether cleanup is allowed.
+      if (!initiallyEmpty) return
+      this.wipeInstallWorkspace(checked.path)
+      this.cleanupCifarLock(installToken)
+    }
     try {
       fs.copyFileSync(this.materialZip(taskId), path.join(checked.path, 'workspace.zip'))
       if (definition.needsSetup) this.extractMaterial(checked.path)
     } catch (error: unknown) {
+      cleanupInstall()
       return { ok: false, error: '复制素材失败：' + (error instanceof Error ? error.message : String(error)) }
     }
     const env: Record<string, string> = {
+      EVAL_INSTALL_TOKEN: installToken,
       EVAL_CLONE_URL: this.cloneUrl(definition, options),
       EVAL_PIP_INDEX_URL: this.pipIndexUrl(options),
       GIT_TERMINAL_PROMPT: '0',
       EVAL_GIT_PROXY: this.proxyValue(options.gitProxyUrl),
       EVAL_PIP_PROXY: this.proxyValue(options.pipProxyUrl),
       EVAL_CIFAR_PROXY: this.proxyValue(options.cifarProxyUrl),
+      EVAL_CIFAR_URL: this.cifarUrl(options),
     }
     const command = definition.needsSetup ? ['bash', 'setup.sh'] : ['bash', '-c', 'true']
     const job = this.jobs.start({
       kind: 'install', task: taskId, workspaceId, command, cwd: checked.path, env,
+      onCancel: cleanupInstall,
+      onFailure: cleanupInstall,
       onSuccess: () => {
         if (definition.needsSetup) this.cleanupWorkspace(checked.path)
         const runId = this.newRunId()
@@ -470,6 +514,7 @@ export class TaskService {
         return { runId, prompt }
       },
     })
+    if (job.status === 'failed') cleanupInstall()
     return { ok: true, jobId: job.id }
   }
 
@@ -485,7 +530,11 @@ export class TaskService {
       kind: 'eval', task: taskId, workspaceId,
       command: ['python3', '-X', 'utf8', script, '--workspace', checked.path],
       cwd: packageRoot(),
-      env: { PYTHONPATH: '', PYTHONHOME: '', EVAL_CIFAR_PROXY: this.proxyValue(this.guard.configuration.cifarProxyUrl) },
+      env: {
+        PYTHONPATH: '', PYTHONHOME: '',
+        EVAL_CIFAR_PROXY: this.proxyValue(this.guard.configuration.cifarProxyUrl),
+        EVAL_CIFAR_URL: this.cifarUrl(this.guard.configuration),
+      },
     })
     return { ok: true, jobId: job.id }
   }
@@ -527,6 +576,7 @@ export class TaskService {
       if (definition.prepare !== undefined) definition.prepare(checked.path)
       if (definition.needsSetup) this.cleanupWorkspace(checked.path)
     } catch (error: unknown) {
+      if (checked.empty) this.wipeInstallWorkspace(checked.path)
       return { ok: false, workspaceId, workspacePath: checked.path, error: '任务准备失败：' + (error instanceof Error ? error.message : String(error)) }
     }
     const runId = this.newRunId()

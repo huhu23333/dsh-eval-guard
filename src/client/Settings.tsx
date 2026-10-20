@@ -7,7 +7,7 @@ import {
   CHECK_ROUTE, EVENTS_ROUTE, INSTALL_ROUTE, MANUAL_ROUTE, REVEAL_ROUTE, STATE_ROUTE,
   JOBS_ROUTE, JOB_ROUTE, JOB_CANCEL_ROUTE, EVAL_ROUTE,
   type CheckResult, type GuardEvent, type GuardState, type InstallResult, type ManualPaths, type JobDetail, type JobInfo,
-  PIP_MIRRORS,
+  PIP_MIRRORS, CIFAR_MIRRORS,
 } from '../shared.ts'
 import { evalBridge } from './bridge.ts'
 
@@ -38,6 +38,8 @@ interface Draft {
   gitProxyUrl: string
   pipProxyUrl: string
   cifarProxyUrl: string
+  cifarMirror: string
+  customCifarUrl: string
 }
 
 const EMPTY: Draft = {
@@ -54,6 +56,8 @@ const EMPTY: Draft = {
   gitProxyUrl: '',
   pipProxyUrl: '',
   cifarProxyUrl: '',
+  cifarMirror: 'toronto',
+  customCifarUrl: '',
 }
 
 const box: CSSProperties = { border: '1px solid var(--vscode-panel-border, #3c3c3c)', borderRadius: 8, padding: 14, marginBottom: 14 }
@@ -81,6 +85,8 @@ function normalize(value: Record<string, unknown> | undefined): Draft {
     gitProxyUrl: typeof value?.gitProxyUrl === 'string' ? value.gitProxyUrl : '',
     pipProxyUrl: typeof value?.pipProxyUrl === 'string' ? value.pipProxyUrl : '',
     cifarProxyUrl: typeof value?.cifarProxyUrl === 'string' ? value.cifarProxyUrl : '',
+    cifarMirror: typeof value?.cifarMirror === 'string' && value.cifarMirror !== '' ? value.cifarMirror : 'toronto',
+    customCifarUrl: typeof value?.customCifarUrl === 'string' ? value.customCifarUrl : '',
   }
 }
 
@@ -229,7 +235,7 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
     const result = await fetch(INSTALL_ROUTE, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ workspaceId, task: taskId, cloneSource: draft.cloneSource, customCloneUrl: draft.customCloneUrl,
-        pipIndex: draft.pipIndex, customPipUrl: draft.customPipUrl, gitProxyUrl: draft.gitProxyUrl, pipProxyUrl: draft.pipProxyUrl, cifarProxyUrl: draft.cifarProxyUrl }),
+        pipIndex: draft.pipIndex, customPipUrl: draft.customPipUrl, gitProxyUrl: draft.gitProxyUrl, pipProxyUrl: draft.pipProxyUrl, cifarProxyUrl: draft.cifarProxyUrl, cifarMirror: draft.cifarMirror, customCifarUrl: draft.customCifarUrl }),
     }).then(readJson<{ ok: boolean; jobId?: string; error?: string }>)
     if (!result.ok || result.jobId === undefined) { autoOpenJob.current = ''; setError(result.error ?? '安装失败'); return }
     autoOpenJob.current = result.jobId
@@ -351,6 +357,15 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
               onChange={event => edit({ pipProxyUrl: event.target.value })} onBlur={() => void save({ pipProxyUrl: draft.pipProxyUrl })} placeholder="127.0.0.1:7897" />
           </div>
           <div style={row}>
+            <span>{t('settings.cifarMirror')}:</span>
+            <select value={draft.cifarMirror} disabled={!ready} onChange={event => void save({ cifarMirror: event.target.value })}>
+              {CIFAR_MIRRORS.map(mirror => <option key={mirror.id} value={mirror.id}>{mirror.label}</option>)}
+              <option value="custom">{t('settings.custom')}</option>
+            </select>
+            {draft.cifarMirror === 'custom' && <input style={{ width: 320 }} disabled={!ready} value={draft.customCifarUrl}
+              onChange={event => edit({ customCifarUrl: event.target.value })} onBlur={() => void save({ customCifarUrl: draft.customCifarUrl })} placeholder="https://.../cifar-10-binary.tar.gz" />}
+          </div>
+          <div style={row}>
             <span>{t('settings.cifarProxy')}:</span>
             <input style={{ width: 260 }} disabled={!ready} value={draft.cifarProxyUrl}
               onChange={event => edit({ cifarProxyUrl: event.target.value })} onBlur={() => void save({ cifarProxyUrl: draft.cifarProxyUrl })} placeholder="127.0.0.1:7897" />
@@ -377,7 +392,7 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
           {job.status === 'running' && <button style={danger} onClick={() => void cancelJob()}>{t('settings.cancel')}</button>}
           {job.kind === 'install' && job.status === 'succeeded' && job.prompt !== undefined && workspaceId !== '' && <button style={primary} onClick={() => evalBridge()?.startSession(workspaceId, job.prompt!)}>{t('settings.startSession')}</button>}</div>
         {job.error !== undefined && <p style={{ ...note, color: '#d77' }}>{job.error}</p>}
-        <pre style={{ ...textarea, maxHeight: 260, overflow: 'auto' }}>{job.log || t('settings.waiting')}</pre>
+        <pre style={{ ...textarea, maxHeight: 260, overflow: 'auto' }}>{job.log || (job.status === 'running' || job.status === 'queued' ? t('settings.waiting') : '')}</pre>
         {job.result !== undefined && <pre style={{ ...textarea, maxHeight: 260, overflow: 'auto' }}>{JSON.stringify(job.result, undefined, 2)}</pre>}
       </div>}
     </section>

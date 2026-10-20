@@ -44,7 +44,9 @@ Neural-FP32 是独立的新任务：固定 fp32，不做完整训练；agent 从
 
 Neural-CIFAR 在 Neural-FP32 的基础上要求 agent 用同一套 C++ 训练框架构造并训练 CIFAR-10 图像分类网络。任务不限时，agent 定位为神经网络全栈设计与优化大师，提交前应尽可能优化；速度和未知验证集准确率都是重要指标，会参与世界顶尖水平比拼。安装时下载并准备 50k train split；隐藏 10k test split 由独立评测目录 `dsh-eval-guard/neural-cifar-eval/fetch_cifar.py` 获取并放在该目录的 `hidden/`，不作为工作区文件。评测保留全部原算子指标，并额外用 4 线程和全部逻辑 CPU 分别跑推理，输出验证准确率、FPS、平均单图耗时；4 线程 0.02s/image 只报告，不门控。
 
-CIFAR-10 下载缓存固定在用户 home 下：`~/.dsh/eval-guard/cache/cifar10/`，保存 train/val 的 images/labels。下载使用 `~/.dsh/eval-guard/cache/cifar10/.download.lock` 独占锁，并实时打印进度；锁存在时认为其他 DSH 实例正在下载，任务安装/评测会提示等待或手动删除锁文件。缓存完整且无锁时直接复用。设置页新增「CIFAR download proxy」输入框，只用于 CIFAR 下载；按任务安装和评测时分别传给 setup/fetch 脚本。
+CIFAR-10 下载缓存固定在用户 home 下：`~/.dsh/eval-guard/cache/cifar10/`，保存 train/val 的 images/labels。下载使用 `~/.dsh/eval-guard/cache/cifar10/.download.lock` 独占锁，并实时打印进度；锁存在时认为其他 DSH 实例正在下载，任务安装/评测会提示等待或手动删除锁文件。缓存完整且无锁时直接复用。设置页新增「CIFAR download mirror」和「CIFAR download proxy」输入框：mirror 可选 Toronto 官方、Toronto Cave 或自定义 tar.gz URL，proxy 只用于 CIFAR 下载。按任务安装和评测时分别传给 setup/fetch 脚本。
+
+所有任务的后台安装被取消或失败时，会删除本次安装已搬入工作区的文件，并清空工作区。清理只会在安装开始前工作区确实为空时执行，原工作区有内容时绝不触发。Neural-CIFAR 还会删除本次安装拥有的 CIFAR 下载锁，但不会删除其他 DSH 实例的锁。
 
 评测时在临时目录独立构建，然后从 assets/neural-cpp/hidden/ 注入 C++ 测试源码；测试数据由固定种子在进程内生成，不依赖或复制外部数据文件。
 

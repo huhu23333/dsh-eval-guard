@@ -52,6 +52,11 @@ export interface TaskRemote {
 }
 
 /** Common pip indexes offered by the settings page. */
+export const CIFAR_MIRRORS: readonly { id: string; label: string; url: string }[] = [
+  { id: 'toronto', label: 'Toronto 官方', url: 'https://www.cs.toronto.edu/~kriz/cifar-10-binary.tar.gz' },
+  { id: 'cave', label: 'Toronto Cave', url: 'https://cave.cs.toronto.edu/kriz/cifar-10-binary.tar.gz' },
+]
+
 export const PIP_MIRRORS: readonly { id: string; label: string; url: string }[] = [
   { id: 'pypi', label: 'PyPI', url: 'https://pypi.org/simple' },
   { id: 'tsinghua', label: '清华 TUNA', url: 'https://pypi.tuna.tsinghua.edu.cn/simple' },

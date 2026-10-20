@@ -91,7 +91,7 @@ export function registerRoutes(ctx: Context, guard: Guard, tasks: TaskService): 
     add({
       path: INSTALL_ROUTE, methods: ['POST'], requestBody: 'buffered',
       fetch: async (request: Request): Promise<Response> => {
-        let body: { workspaceId?: unknown; task?: unknown; cloneSource?: unknown; customCloneUrl?: unknown; pipIndex?: unknown; customPipUrl?: unknown; gitProxyUrl?: unknown; pipProxyUrl?: unknown; cifarProxyUrl?: unknown } = {}
+        let body: { workspaceId?: unknown; task?: unknown; cloneSource?: unknown; customCloneUrl?: unknown; pipIndex?: unknown; customPipUrl?: unknown; gitProxyUrl?: unknown; pipProxyUrl?: unknown; cifarProxyUrl?: unknown; cifarMirror?: unknown; customCifarUrl?: unknown } = {}
         try { body = await request.json() as typeof body } catch { return json({ error: 'invalid body' }, 400) }
         const workspaceId = typeof body.workspaceId === 'string' ? body.workspaceId : ''
         const taskId = typeof body.task === 'string' && body.task !== '' ? body.task : TANK_TASK
@@ -105,6 +105,8 @@ export function registerRoutes(ctx: Context, guard: Guard, tasks: TaskService): 
           gitProxyUrl: typeof body.gitProxyUrl === 'string' ? body.gitProxyUrl : config.gitProxyUrl,
           pipProxyUrl: typeof body.pipProxyUrl === 'string' ? body.pipProxyUrl : config.pipProxyUrl,
           cifarProxyUrl: typeof body.cifarProxyUrl === 'string' ? body.cifarProxyUrl : config.cifarProxyUrl,
+          cifarMirror: typeof body.cifarMirror === 'string' ? body.cifarMirror : config.cifarMirror,
+          customCifarUrl: typeof body.customCifarUrl === 'string' ? body.customCifarUrl : config.customCifarUrl,
         }))
       },
     })

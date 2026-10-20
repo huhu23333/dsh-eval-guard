@@ -154,6 +154,8 @@ export class Guard {
       gitProxyUrl: read('gitProxyUrl') as string,
       pipProxyUrl: read('pipProxyUrl') as string,
       cifarProxyUrl: read('cifarProxyUrl') as string,
+      cifarMirror: read('cifarMirror') as string,
+      customCifarUrl: read('customCifarUrl') as string,
     })
   }
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import signal
 import socket
 import sys
 import tarfile
@@ -30,6 +31,7 @@ TRAIN_N = 50000
 VAL_N = 10000
 TRAIN_IMAGES = TRAIN_N * 3072
 VAL_IMAGES = VAL_N * 3072
+TOKEN = os.environ.get('EVAL_INSTALL_TOKEN', '')
 EXPECTED = {
     'train_images.bin': TRAIN_IMAGES,
     'train_labels.bin': TRAIN_N,
@@ -124,7 +126,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument('--cache', default=str(CACHE))
     parser.add_argument('--proxy', default=os.environ.get('EVAL_CIFAR_PROXY', ''))
-    parser.add_argument('--url', default=URL)
+    parser.add_argument('--url', default=os.environ.get('EVAL_CIFAR_URL', '') or URL)
     parser.add_argument('--copy-train', default='')
     parser.add_argument('--copy-val', default='')
     args = parser.parse_args()
@@ -153,7 +155,15 @@ def main() -> int:
         try:
             with os.fdopen(fd, 'w', encoding='utf-8') as handle:
                 fd = None
-                handle.write(f'pid={os.getpid()} host={socket.gethostname()} time={time.strftime("%Y-%m-%d %H:%M:%S")}\n')
+                handle.write(f'pid={os.getpid()} host={socket.gethostname()} time={time.strftime("%Y-%m-%d %H:%M:%S")} token={TOKEN}\n')
+            def _terminate(signum, _frame):
+                try:
+                    lock.unlink()
+                except FileNotFoundError:
+                    pass
+                os._exit(128 + signum)
+            signal.signal(signal.SIGTERM, _terminate)
+            signal.signal(signal.SIGINT, _terminate)
             if not cache_complete(cache):
                 tar_path = download(args.url, normalize_proxy(args.proxy))
                 try:
