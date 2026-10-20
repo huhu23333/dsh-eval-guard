@@ -41,6 +41,8 @@ export const NEURAL_CPP_TASK = 'neural-cpp'
 export const NEURAL_CPP_TASK_LABEL = 'Neural-CPP · 纯 C++ 张量后端'
 export const NEURAL_FP32_TASK = 'neural-fp32'
 export const NEURAL_FP32_TASK_LABEL = 'Neural-FP32 · 运算与性能'
+export const NEURAL_CIFAR_TASK = 'neural-cifar'
+export const NEURAL_CIFAR_TASK_LABEL = 'Neural-CIFAR · 从零训练图像分类'
 
 /** One validated clone remote for a task. */
 export interface TaskRemote {

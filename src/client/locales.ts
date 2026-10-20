@@ -108,6 +108,7 @@ export const en: Record<Key, string> = {
   'settings.startSession': 'Open in new conversation',
   'settings.gitProxy': 'Git proxy',
   'settings.pipProxy': 'pip proxy',
+  'settings.cifarProxy': 'CIFAR download proxy',
   'settings.loading': 'Loading…',
   'settings.recent': 'Recent events',
   'settings.none': 'None.',

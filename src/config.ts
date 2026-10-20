@@ -31,6 +31,8 @@ export interface Config {
   gitProxyUrl: string
   /** Optional proxy used only for pip installs, e.g. 127.0.0.1:7897. */
   pipProxyUrl: string
+  /** Optional proxy used only for CIFAR-10 downloads, e.g. 127.0.0.1:7897. */
+  cifarProxyUrl: string
 }
 
 /** Factory defaults. */
@@ -47,6 +49,7 @@ export const DEFAULT_CONFIG: Config = {
   customPipUrl: '',
   gitProxyUrl: '',
   pipProxyUrl: '',
+  cifarProxyUrl: '',
 }
 
 /** The exported schema; the Loader row id is also this document's namespace. */
@@ -63,6 +66,7 @@ export const Config = z.object({
   customPipUrl: z.string().default('').volatile(),
   gitProxyUrl: z.string().default('').volatile(),
   pipProxyUrl: z.string().default('').volatile(),
+  cifarProxyUrl: z.string().default('').volatile(),
 })
 
 /** Clamp and normalize a live configuration object. */
@@ -81,5 +85,6 @@ export function resolveConfig(value: Partial<Config> | undefined): Config {
     customPipUrl: typeof value?.customPipUrl === 'string' ? value.customPipUrl : '',
     gitProxyUrl: typeof value?.gitProxyUrl === 'string' ? value.gitProxyUrl : '',
     pipProxyUrl: typeof value?.pipProxyUrl === 'string' ? value.pipProxyUrl : '',
+    cifarProxyUrl: typeof value?.cifarProxyUrl === 'string' ? value.cifarProxyUrl : '',
   }
 }

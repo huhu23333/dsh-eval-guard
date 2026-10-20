@@ -11,7 +11,7 @@ import {
   LAND_TASK, LAND_TASK_LABEL, BOMBERMAN_TASK, BOMBERMAN_TASK_LABEL, CTF_TASK, CTF_TASK_LABEL,
   COMMIT0_TASK, COMMIT0_TASK_LABEL, SWE_BENCH_PRO_TASK, SWE_BENCH_PRO_TASK_LABEL,
   FEATUREBENCH_TASK, FEATUREBENCH_TASK_LABEL, NEURAL_CPP_TASK, NEURAL_CPP_TASK_LABEL,
-  NEURAL_FP32_TASK, NEURAL_FP32_TASK_LABEL, PIP_MIRRORS,
+  NEURAL_FP32_TASK, NEURAL_FP32_TASK_LABEL, NEURAL_CIFAR_TASK, NEURAL_CIFAR_TASK_LABEL, PIP_MIRRORS,
   type CheckResult, type InstallResult, type RunRecord, type TaskInfo,
 } from './shared.ts'
 import type { Guard, TaskDefinition } from './guard.ts'
@@ -31,6 +31,7 @@ export const TASKS: readonly TaskInfo[] = [
   { id: FEATUREBENCH_TASK, label: FEATUREBENCH_TASK_LABEL, description: 'FeatureBench 单 feature：实现一个跨文件功能，隐藏测试评分。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true, repoUrl: 'https://github.com/mwaskom/seaborn', remotes: [{ id: 'github', label: 'GitHub', url: 'https://github.com/mwaskom/seaborn.git' }, { id: 'gitee', label: 'Gitee 镜像', url: 'https://gitee.com/mirrors/seaborn.git' }, { id: 'gitcode', label: 'GitCode 镜像', url: 'https://gitcode.com/gh_mirrors/se/seaborn.git' }] },
   { id: NEURAL_CPP_TASK, label: NEURAL_CPP_TASK_LABEL, description: '从零实现纯 C++ 张量运算与反向传播后端；隐藏测试统计正确性与速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
   { id: NEURAL_FP32_TASK, label: NEURAL_FP32_TASK_LABEL, description: '从零实现纯 C++ FP32 神经网络算子、反向传播与优化器 CLI；逐操作统计误差和速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
+  { id: NEURAL_CIFAR_TASK, label: NEURAL_CIFAR_TASK_LABEL, description: '从零实现纯 C++ 训练框架，构造并训练 CIFAR-10 图像分类网络；保留算子指标并统计验证集准确率与多线程推理性能。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
 ]
 
 /** The tank task definition (original prompt; only halftime mechanics removed). */
@@ -286,6 +287,42 @@ export const NEURAL_FP32_DEFINITION: TaskDefinition = {
   },
 }
 
+/** CIFAR-10 training task. */
+export const NEURAL_CIFAR_DEFINITION: TaskDefinition = {
+  id: NEURAL_CIFAR_TASK,
+  label: NEURAL_CIFAR_TASK_LABEL,
+  description: TASKS[10]!.description,
+  asset: path.join(packageRoot(), 'assets', 'neural-cifar', 'workspace.zip'),
+  timeLimitMinutes: 1440,
+  timeLimitEnabled: false,
+  needsSetup: true,
+  prompt() {
+    return [
+      '你是一名世界顶尖的神经网络全栈设计与优化工程师，也是一名以“榨干每一分合法算力”为信条的竞赛选手。任务：从零实现纯 C++17、仅 CPU 的 FP32 训练框架（算子、反向、优化器、固定 CLI），并用同一框架训练 CIFAR-10 图像分类网络。评测会分别报告隐藏验证集准确率、推理性能、以及保留的算子正确性/误差/速度；不提供统一总分，各项权重未知——因此不要把任何一项做成短板。',
+      '',
+      '请先完整阅读 TASK.md 与 CLI 协议，它是权威规则；在规则模糊处按本提示的保守口径执行，并把理解写入 NOTES.md。硬约束：仅 Linux + GCC + C++17 标准库，固定 fp32，无 Python/OpenCL/CUDA/BLAS/Eigen/第三方库；必须产出 build/nn_task、build/train、build/infer 并留下可加载的 model/；工作区提供 50k train split，评测使用独立隐藏验证集。线程：由你发起的所有运行（开发、自测、算子基准、训练）一律最多 4 个 worker；`infer --threads N` 必须能正确处理不同线程数，但本地自测固定 4；把分块/归约逻辑与线程数解耦，用纯函数单元测试覆盖不同分块的正确性。算子速度不是准确率的竞争者而是共同乘数：更快的 matmul/conv 意味着同样时间能跑更多 epoch，也直接抬高推理 FPS；但任何速度优化都不能牺牲正确性。',
+      '',
+      '你只需要把全部精力放在把结果做到最好：穷尽优化、持续实验、自我批判。评测由独立数据和外部约束执行，不要让对边界的担心分散注意力；把能复现的结果、命令和文件留在工作区即可。',
+      '',
+      '工作方式：',
+      '0) 先必要算子 + 便宜完整基线：尽快实现让 CIFAR 训练跑通所需的最小算子/反向/优化器/线程池与三个 CLI，短训出 model/，端到端跑通 train→infer，拿到第一个本地 holdout 准确率与单图耗时。先保证可交付，再谈优化。',
+      '1) 补全算子正确性（昂贵搜索前必须过门）：用独立 double 标量参考、有限差分梯度检查，以及边界形状/广播/分组/步长/空洞/非方形核/softmax 数值稳定/AdamW step 偏置/N=1/H/W<kernel/fp32 写出等用例，逐算子记录误差到 NOTES.md；每次改 conv/matmul/线程池后重测受影响算子与端到端推理。',
+      '2) 持续探索：不断提出实质性不同的架构/训练假设并做可比较的 pilot，一次只改一个主变量；固定可复现的分层 holdout（种子写死），holdout 仅用于评估，不参与训练、增强或归一化统计；把假设、唯一改动、命令、种子、划分、准确率、耗时、算子指标、结论记入 RESULTS.md 排名表。候选扩大训练前先看 pilot 信号；胜出方向继续做单变量消融，最终选择尽量在另一个独立划分/种子上复核。时间无限，持续寻找更高价值的方向；不要跑一个配置就收。',
+      '3) 深挖：学习率/调度/weight decay/增强/标签平滑/EMA/网络结构/推理优化（BN 融合、卷积实现、多线程分块、内存复用）；TTA 与集成只在实测准确率收益值得其 FPS 代价时采用；使用 BatchNorm 必须把 running mean/var 固化进 model/ 并在 infer 使用。任何提升若接近噪声，都要结合 5k holdout 抽样误差、随机种子波动和独立复核划分综合判断，不能当成硬阈值；给出准确率-速度 Pareto 权衡再选配置。',
+      '4) 锁定与重训：冻结配置后用全部 50k 重训最终权重（自测 holdout 回归训练集）；反复在同一 holdout 上挑选会产生选择性偏差，报告保守期望而非最好一次；CIFAR-10 测试集约 3.3% 与训练集近重复，自测可能偏乐观，按保守口径。长训练必须 checkpoint + resume。',
+      '5) 交付审计：清空/新建 build 目录后 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release && cmake --build build -j4，确认三个二进制从零构建；跑自己的全操作自测（覆盖协议与边界）；用真实图像字节跑 infer（4 线程），核对输出为 N 个 uint8；确认无 NaN/崩溃、无绝对路径、不依赖开发进程或临时构建产物。保留已验证的最佳模型，退步立即回退。',
+      '',
+      '时间无限，持续优化，不要因为基线跑通就结束；始终保证工作区处于可评测状态：三个 CLI 可构建、model/ 可加载、退步可回滚。能跑通或超过朴素基线不代表够强，正式对手远强于此。',
+      '',
+      '自我批判：假设自测数字被高估了 0.5%，找出高估来源（holdout 被反复选择、增强/统计泄漏、数据顺序、随机性、口径不一致、单次运气），用不同种子/划分/更严口径复核；主动红队实现（极端与边界形状、大/小数值、eps/溢出、groups/dilation/stride 组合、线程数与确定性、长训练内存与数值稳定性）。',
+      '',
+      '诚实汇报：完成后给出网络结构与训练方法、自测划分与实测结果、推理 FPS 与单图耗时、算子自测结果与已知风险、留下的命令与文件清单。所有数字必须能由留下的命令复现。',
+      '',
+      '不要向我提问，也不要等待确认，独立完成。',
+    ].join('\n')
+  },
+}
+
 /** All task definitions keyed by id. */
 export const TASK_DEFINITIONS: Readonly<Record<string, TaskDefinition>> = {
   [TANK_TASK]: TANK_DEFINITION,
@@ -298,6 +335,7 @@ export const TASK_DEFINITIONS: Readonly<Record<string, TaskDefinition>> = {
   [FEATUREBENCH_TASK]: FEATUREBENCH_DEFINITION,
   [NEURAL_CPP_TASK]: NEURAL_CPP_DEFINITION,
   [NEURAL_FP32_TASK]: NEURAL_FP32_DEFINITION,
+  [NEURAL_CIFAR_TASK]: NEURAL_CIFAR_DEFINITION,
 }
 
 /** Install, check, and prompt services for the task packs. */
@@ -308,6 +346,7 @@ export interface SetupOptions {
   customPipUrl?: string
   gitProxyUrl?: string
   pipProxyUrl?: string
+  cifarProxyUrl?: string
 }
 
 export class TaskService {
@@ -387,7 +426,7 @@ export class TaskService {
 
   /** Remove install-only artifacts so they are not part of the agent workspace. */
   private cleanupWorkspace(workspacePath: string): void {
-    for (const name of ['.git', '.repo', 'setup.sh', 'remove.patch', 'spec.pdf.bz2']) {
+    for (const name of ['.git', '.repo', 'setup.sh', 'remove.patch', 'spec.pdf.bz2', 'cifar_cache.py']) {
       try { fs.rmSync(path.join(workspacePath, name), { recursive: true, force: true }) } catch { /* best effort */ }
     }
   }
@@ -412,6 +451,7 @@ export class TaskService {
       GIT_TERMINAL_PROMPT: '0',
       EVAL_GIT_PROXY: this.proxyValue(options.gitProxyUrl),
       EVAL_PIP_PROXY: this.proxyValue(options.pipProxyUrl),
+      EVAL_CIFAR_PROXY: this.proxyValue(options.cifarProxyUrl),
     }
     const command = definition.needsSetup ? ['bash', 'setup.sh'] : ['bash', '-c', 'true']
     const job = this.jobs.start({
@@ -445,7 +485,7 @@ export class TaskService {
       kind: 'eval', task: taskId, workspaceId,
       command: ['python3', '-X', 'utf8', script, '--workspace', checked.path],
       cwd: packageRoot(),
-      env: { PYTHONPATH: '', PYTHONHOME: '' },
+      env: { PYTHONPATH: '', PYTHONHOME: '', EVAL_CIFAR_PROXY: this.proxyValue(this.guard.configuration.cifarProxyUrl) },
     })
     return { ok: true, jobId: job.id }
   }

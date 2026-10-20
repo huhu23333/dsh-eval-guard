@@ -37,6 +37,7 @@ interface Draft {
   customPipUrl: string
   gitProxyUrl: string
   pipProxyUrl: string
+  cifarProxyUrl: string
 }
 
 const EMPTY: Draft = {
@@ -52,6 +53,7 @@ const EMPTY: Draft = {
   customPipUrl: '',
   gitProxyUrl: '',
   pipProxyUrl: '',
+  cifarProxyUrl: '',
 }
 
 const box: CSSProperties = { border: '1px solid var(--vscode-panel-border, #3c3c3c)', borderRadius: 8, padding: 14, marginBottom: 14 }
@@ -78,6 +80,7 @@ function normalize(value: Record<string, unknown> | undefined): Draft {
     customPipUrl: typeof value?.customPipUrl === 'string' ? value.customPipUrl : '',
     gitProxyUrl: typeof value?.gitProxyUrl === 'string' ? value.gitProxyUrl : '',
     pipProxyUrl: typeof value?.pipProxyUrl === 'string' ? value.pipProxyUrl : '',
+    cifarProxyUrl: typeof value?.cifarProxyUrl === 'string' ? value.cifarProxyUrl : '',
   }
 }
 
@@ -226,7 +229,7 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
     const result = await fetch(INSTALL_ROUTE, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ workspaceId, task: taskId, cloneSource: draft.cloneSource, customCloneUrl: draft.customCloneUrl,
-        pipIndex: draft.pipIndex, customPipUrl: draft.customPipUrl, gitProxyUrl: draft.gitProxyUrl, pipProxyUrl: draft.pipProxyUrl }),
+        pipIndex: draft.pipIndex, customPipUrl: draft.customPipUrl, gitProxyUrl: draft.gitProxyUrl, pipProxyUrl: draft.pipProxyUrl, cifarProxyUrl: draft.cifarProxyUrl }),
     }).then(readJson<{ ok: boolean; jobId?: string; error?: string }>)
     if (!result.ok || result.jobId === undefined) { autoOpenJob.current = ''; setError(result.error ?? '安装失败'); return }
     autoOpenJob.current = result.jobId
@@ -346,6 +349,11 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
             <span>{t('settings.pipProxy')}:</span>
             <input style={{ width: 260 }} disabled={!ready} value={draft.pipProxyUrl}
               onChange={event => edit({ pipProxyUrl: event.target.value })} onBlur={() => void save({ pipProxyUrl: draft.pipProxyUrl })} placeholder="127.0.0.1:7897" />
+          </div>
+          <div style={row}>
+            <span>{t('settings.cifarProxy')}:</span>
+            <input style={{ width: 260 }} disabled={!ready} value={draft.cifarProxyUrl}
+              onChange={event => edit({ cifarProxyUrl: event.target.value })} onBlur={() => void save({ cifarProxyUrl: draft.cifarProxyUrl })} placeholder="127.0.0.1:7897" />
           </div>
         </div>
       })()}
