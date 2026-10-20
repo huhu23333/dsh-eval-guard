@@ -69,6 +69,12 @@ const SYSTEM_READ_DIRS: readonly string[] = [
   '/usr', '/bin', '/sbin', '/lib', '/lib32', '/lib64', '/libx32', '/etc', '/opt', '/sys', '/var/lib',
 ]
 
+/**
+ * Individual read-only system files commonly needed by benign inspection tools
+ * such as uptime/who. Keep this list narrow; do not expose /run as a directory.
+ */
+const SYSTEM_READ_FILES: readonly string[] = ['/run/utmp', '/run/utmpx', '/var/log/wtmp']
+
 /** Python stdlib/venv directories that may live next to a workspace. */
 function pythonRuntimeDirs(workspace: string): string[] {
   const dirs = new Set<string>()
@@ -212,6 +218,12 @@ function writePolicy(workspace: string, rules: readonly PathRule[]): string {
     }
   }
   lines.push(line('read', '/proc'))
+  for (const file of SYSTEM_READ_FILES) {
+    // Allow the path even when it is absent on this host: a missing file should
+    // produce ENOENT, not a policy violation that kills the whole command group.
+    lines.push(line('read', file))
+    for (const ancestor of ancestorsOf(file)) lines.push(line('exact', ancestor))
+  }
   lines.push(line('exact', '/'))
   for (const ancestor of ancestorsOf(workspace)) lines.push(line('exact', ancestor))
   for (const ancestor of ancestorsOf(runtime.node)) lines.push(line('exact', ancestor))
@@ -261,7 +273,7 @@ function writePolicy(workspace: string, rules: readonly PathRule[]): string {
 
 /** Build the bwrap profile arguments for one workspace. */
 function bwrapArgs(workspace: string, cwd: string, rules: readonly PathRule[], runtime: RuntimeFiles): string[] {
-  const args: string[] = ['--unshare-all', '--die-with-parent', '--new-session']
+  const args: string[] = ['--unshare-all', '--die-with-parent', '--new-session', '--as-pid-1']
   for (const system of SYSTEM_READ_DIRS) {
     try {
       if (fs.statSync(system).isDirectory()) args.push('--ro-bind', system, system)
@@ -270,6 +282,15 @@ function bwrapArgs(workspace: string, cwd: string, rules: readonly PathRule[], r
     }
   }
   args.push('--proc', '/proc', '--dev', '/dev')
+  const systemFiles = SYSTEM_READ_FILES.filter(file => {
+    try { return fs.statSync(file).isFile() } catch { return false }
+  })
+  if (systemFiles.some(file => file.startsWith('/run/'))) args.push('--dir', '/run')
+  if (systemFiles.some(file => file.startsWith('/var/log/'))) {
+    args.push('--dir', '/var')
+    args.push('--dir', '/var/log')
+  }
+  for (const file of systemFiles) args.push('--ro-bind', file, file)
   args.push('--bind', workspace, workspace)
   const tmp = path.join(workspace, '.tmp')
   ensureDir(tmp)

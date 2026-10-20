@@ -28,10 +28,16 @@ def emit(payload: dict) -> None:
     Path(target).write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
 
 
-def clean_copy(source: Path, target: Path, ignore_venv: bool = False) -> None:
+def clean_copy(source: Path, target: Path, ignore_venv: bool = False,
+               ignore_names: tuple[str, ...] = ()) -> None:
+    ignored = set(ignore_names)
+
     def ignore(directory: str, names: list[str]) -> set[str]:
-        if ignore_venv and Path(directory) == source:
-            return {name for name in names if name == '.venv'}
+        if Path(directory) == source:
+            skip = set(ignored)
+            if ignore_venv:
+                skip.add('.venv')
+            return {name for name in names if name in skip}
         return set()
     shutil.copytree(source, target, symlinks=True, ignore=ignore)
 

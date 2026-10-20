@@ -41,7 +41,10 @@ def run(cmd, cwd, timeout=1800):
 
 def build_candidate(workspace: Path, root: Path):
     candidate = root / 'candidate'
-    clean_copy(workspace, candidate)
+    clean_copy(workspace, candidate, ignore_names=(
+        'data', 'build', 'work', '.tmp', '.cache', '.home', '.config', '.local',
+        '.git', '.venv', 'node_modules',
+    ))
     source = candidate
     if not (source / 'CMakeLists.txt').is_file() and (candidate / 'workspace' / 'CMakeLists.txt').is_file():
         source = candidate / 'workspace'
