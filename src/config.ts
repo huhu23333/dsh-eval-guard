@@ -37,6 +37,10 @@ export interface Config {
   cifarMirror: string
   /** Custom CIFAR-10 binary tar.gz URL. */
   customCifarUrl: string
+  /** Whether other agents may be evaluating in parallel on the same machine. */
+  parallelEval: boolean
+  /** Task selected in the install/eval task picker; binds new main conversations. */
+  taskId: string
 }
 
 /** Factory defaults. */
@@ -56,6 +60,8 @@ export const DEFAULT_CONFIG: Config = {
   cifarProxyUrl: '',
   cifarMirror: 'toronto',
   customCifarUrl: '',
+  parallelEval: false,
+  taskId: '',
 }
 
 /** The exported schema; the Loader row id is also this document's namespace. */
@@ -75,6 +81,8 @@ export const Config = z.object({
   cifarProxyUrl: z.string().default('').volatile(),
   cifarMirror: z.string().default('toronto').volatile(),
   customCifarUrl: z.string().default('').volatile(),
+  parallelEval: z.boolean().default(false).volatile(),
+  taskId: z.string().default('').volatile(),
 })
 
 /** Clamp and normalize a live configuration object. */
@@ -96,5 +104,7 @@ export function resolveConfig(value: Partial<Config> | undefined): Config {
     cifarProxyUrl: typeof value?.cifarProxyUrl === 'string' ? value.cifarProxyUrl : '',
     cifarMirror: typeof value?.cifarMirror === 'string' && value.cifarMirror !== '' ? value.cifarMirror : 'toronto',
     customCifarUrl: typeof value?.customCifarUrl === 'string' ? value.customCifarUrl : '',
+    parallelEval: value?.parallelEval === true,
+    taskId: typeof value?.taskId === 'string' ? value.taskId : '',
   }
 }

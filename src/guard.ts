@@ -92,12 +92,15 @@ export class Guard {
   private readonly startedAt = new Map<string, number>()
   private readonly runs = new Map<string, RunRecord>()
   private readonly sessionRuns = new Map<string, string>()
-  private readonly pending = new Map<string, { runId: string; expiresAt: number }>()
   private readonly offsets = new Map<string, number>()
   private readonly knownAgents = new Set<string>()
   private toolCache: string[] = []
   private readonly disposers: (() => void)[] = []
   private readonly task: TaskDefinition
+  /** Optional hook invoked when any run binds to an agent. */
+  onRunAssociated: ((agent: AgentLike, run: RunRecord) => void) | undefined
+  /** Optional automatic task binding for every main conversation. */
+  onAutoRun: ((agent: AgentLike, cwd: string) => boolean) | undefined
 
   /** @param ctx - host context; @param raw - live config; @param task - the one task pack. */
   constructor(ctx: Context, services: Services, raw: Partial<Config>, task: TaskDefinition) {
@@ -156,6 +159,8 @@ export class Guard {
       cifarProxyUrl: read('cifarProxyUrl') as string,
       cifarMirror: read('cifarMirror') as string,
       customCifarUrl: read('customCifarUrl') as string,
+      parallelEval: read('parallelEval') as boolean,
+      taskId: read('taskId') as string,
     })
   }
 
@@ -324,10 +329,8 @@ export class Guard {
     if (this.enabled) this.forceApproval(agent.session)
     const cwd = agent.session.header?.meta?.cwd
     if (cwd !== undefined) {
-      const pending = this.pending.get(cwd)
-      if (pending !== undefined && pending.expiresAt > Date.now()) {
-        this.pending.delete(cwd)
-        this.associate(pending.runId, agent)
+      if (this.enabled) {
+        try { this.onAutoRun?.(agent, cwd) } catch { /* optional auto-task binding */ }
       }
     }
   }
@@ -348,7 +351,13 @@ export class Guard {
     }
   }
 
-  /** Associate one pending run with the new session. */
+  /** Bind an already-registered run to an agent. */
+  attachRun(agent: AgentLike, run: RunRecord): void {
+    this.runs.set(run.runId, run)
+    this.associate(run.runId, agent)
+  }
+
+  /** Associate one run with the new session. */
   private associate(runId: string, agent: AgentLike): void {
     const run = this.runs.get(runId)
     if (run === undefined) return
@@ -361,6 +370,7 @@ export class Guard {
     this.sessionRuns.set(agent.id, runId)
     this.writeRun(run)
     this.writeUsage(runId, this.zeroUsage(run.startedAt))
+    try { this.onRunAssociated?.(agent, run) } catch { /* task tools are optional */ }
   }
 
   /** Session event intake. */
@@ -593,12 +603,9 @@ export class Guard {
     }
   }
 
-  /** Remove old sandbox policy files and expired pending associations. */
+  /** Remove old sandbox policy files. */
   private cleanupTemp(): void {
     const now = Date.now()
-    for (const [workspace, pending] of [...this.pending]) {
-      if (pending.expiresAt <= now) this.pending.delete(workspace)
-    }
     const tmp = path.join(guardRoot(), 'tmp')
     try {
       for (const entry of fs.readdirSync(tmp)) {
@@ -679,7 +686,13 @@ export class Guard {
     this.writeRun(run)
     this.writeUsage(run.runId, this.zeroUsage(null))
     fs.writeFileSync(path.join(guardRoot(), 'runs', run.runId, 'violations.jsonl'), '', 'utf8')
-    this.pending.set(run.workspacePath, { runId: run.runId, expiresAt: Date.now() + 6 * 60 * 60_000 })
+  }
+
+  /** Resolve the registered run bound to one agent session. */
+  runForSession(sessionId: string | undefined): RunRecord | undefined {
+    if (sessionId === undefined) return undefined
+    const runId = this.sessionRuns.get(sessionId)
+    return runId === undefined ? undefined : this.runs.get(runId)
   }
 
   /** Build the prompt for one task with only installed tools listed. */

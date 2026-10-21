@@ -6,13 +6,15 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   TANK_TASK, TANK_TASK_LABEL, WAREHOUSE_TASK, WAREHOUSE_TASK_LABEL,
   LAND_TASK, LAND_TASK_LABEL, BOMBERMAN_TASK, BOMBERMAN_TASK_LABEL, CTF_TASK, CTF_TASK_LABEL,
   COMMIT0_TASK, COMMIT0_TASK_LABEL, SWE_BENCH_PRO_TASK, SWE_BENCH_PRO_TASK_LABEL,
   FEATUREBENCH_TASK, FEATUREBENCH_TASK_LABEL, NEURAL_CPP_TASK, NEURAL_CPP_TASK_LABEL,
   NEURAL_FP32_TASK, NEURAL_FP32_TASK_LABEL, NEURAL_CIFAR_TASK, NEURAL_CIFAR_TASK_LABEL,
+  NEURAL_PENDULUM_TASK, NEURAL_PENDULUM_TASK_LABEL,
   PIP_MIRRORS, CIFAR_MIRRORS,
   type CheckResult, type InstallResult, type RunRecord, type TaskInfo,
 } from './shared.ts'
@@ -34,6 +36,7 @@ export const TASKS: readonly TaskInfo[] = [
   { id: NEURAL_CPP_TASK, label: NEURAL_CPP_TASK_LABEL, description: '从零实现纯 C++ 张量运算与反向传播后端；隐藏测试统计正确性与速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
   { id: NEURAL_FP32_TASK, label: NEURAL_FP32_TASK_LABEL, description: '从零实现纯 C++ FP32 神经网络算子、反向传播与优化器 CLI；逐操作统计误差和速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
   { id: NEURAL_CIFAR_TASK, label: NEURAL_CIFAR_TASK_LABEL, description: '从零实现纯 C++ 训练框架，构造并训练 CIFAR-10 图像分类网络；保留算子指标并统计验证集准确率与多线程推理性能。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
+  { id: NEURAL_PENDULUM_TASK, label: NEURAL_PENDULUM_TASK_LABEL, description: '从零实现纯 C++17 神经网络基础设施，用三个关节角度控制预编译三节摆起摆并稳定保持；评测固定初始状态，统计 t_can。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
 ]
 
 /** The tank task definition (original prompt; only halftime mechanics removed). */
@@ -325,6 +328,35 @@ export const NEURAL_CIFAR_DEFINITION: TaskDefinition = {
   },
 }
 
+/** Neural-Pendulum swing-up task. */
+export const NEURAL_PENDULUM_DEFINITION: TaskDefinition = {
+  id: NEURAL_PENDULUM_TASK,
+  label: NEURAL_PENDULUM_TASK_LABEL,
+  description: TASKS[11]!.description,
+  asset: path.join(packageRoot(), 'assets', 'neural-pendulum', 'workspace.zip'),
+  timeLimitMinutes: 1440,
+  timeLimitEnabled: false,
+  needsSetup: true,
+  prompt() {
+    return [
+      '你是一名控制与神经网络工程师。任务：从零实现纯 C++17、仅 CPU、fp32 的神经网络基础设施，并用它训练一个控制器，控制预编译的三节摆从接近全向下起摆，使三根杆全部进入竖直向上容差并尽可能长时间保持。',
+      '',
+      '请先完整阅读 TASK.md；它是权威规则。硬约束：仅 C++17 标准库、仅 CPU、fp32；不使用 Python/OpenCL/CUDA/BLAS/Eigen/第三方库；必须从提交源码构建出 build/control 与 build/nn_selftest。',
+      '',
+      '环境细节：joint1 与 joint3 驱动，joint2 被动；控制频率 100 Hz；每回合最多 3000 步（30 s），达到上限后继续 step 返回 {"error":"episode_finished"}，必须 reset。环境只返回三个关节角度（弧度，不除 pi），不返回 reward/loss/cost/done；环境不提供杆长、质量、惯量、角速度或 tip。训练 reset 带小范围随机初始角度和角速度；评测使用固定初始状态，无随机扰动。',
+      '',
+      '优化目标：从接近全向下起摆，使三根杆全部进入 0.05 rad 的竖直向上容差，并尽可能长时间保持；评测指标为 t_can。损失函数、奖励、优化器、网络结构和训练方法由你自行设计，不规定任何训练方案。',
+      '',
+      '评测会从干净副本重新构建提交源码，运行 build/nn_selftest，然后在固定初始状态上驱动 build/control，统计连续全向上保持时间 t_can。不要把任何未提交的二进制、临时构建产物或外部进程当作交付依赖。',
+      '使用宿主工具 eval_submit 提交当前源码快照，使用 eval_test 请求宿主评测最新提交。提交快照、事件、测试结果和最终分数全部保存在工作区之外的宿主目录；不要尝试读取或修改这些数据，也不要依赖任何工作区内的测试结果文件。最终评测使用最新提交快照，按宿主事件时间积分计算分数。',
+      '',
+      '工作方式：先完成最小可构建的基础设施和 control 协议；再持续做控制/训练实验并记录可复现结果；最终保证工作区从零构建、nn_selftest 通过、control 可被评测驱动，并留下 NOTES.md/RESULTS.md。',
+      '',
+      '不要向我提问，也不要等待确认，独立完成。',
+    ].join('\n')
+  },
+}
+
 /** All task definitions keyed by id. */
 export const TASK_DEFINITIONS: Readonly<Record<string, TaskDefinition>> = {
   [TANK_TASK]: TANK_DEFINITION,
@@ -338,6 +370,7 @@ export const TASK_DEFINITIONS: Readonly<Record<string, TaskDefinition>> = {
   [NEURAL_CPP_TASK]: NEURAL_CPP_DEFINITION,
   [NEURAL_FP32_TASK]: NEURAL_FP32_DEFINITION,
   [NEURAL_CIFAR_TASK]: NEURAL_CIFAR_DEFINITION,
+  [NEURAL_PENDULUM_TASK]: NEURAL_PENDULUM_DEFINITION,
 }
 
 /** Install, check, and prompt services for the task packs. */
@@ -362,6 +395,191 @@ export class TaskService {
     this.guard = guard
     this.registry = registry
     this.jobs = new JobManager()
+  }
+
+
+  /** Host-side directory for one workspace's authoritative task state. */
+  private hostDir(workspaceId: string): string {
+    return path.join(guardRoot(), 'neural-pendulum', workspaceId.replace(/[^A-Za-z0-9_.-]/g, '_'))
+  }
+
+  private hostEvents(workspaceId: string): string {
+    return path.join(this.hostDir(workspaceId), 'events.jsonl')
+  }
+
+  private appendHostEvent(workspaceId: string, event: Record<string, unknown>): void {
+    const dir = this.hostDir(workspaceId)
+    fs.mkdirSync(dir, { recursive: true })
+    fs.appendFileSync(this.hostEvents(workspaceId), JSON.stringify(event) + '\n', 'utf8')
+  }
+
+  private hostLatestSubmission(workspaceId: string): { id: string; path: string } | undefined {
+    const root = path.join(this.hostDir(workspaceId), 'submissions')
+    if (!fs.existsSync(root)) return undefined
+    const dirs = fs.readdirSync(root, { withFileTypes: true }).filter(entry => entry.isDirectory())
+    if (dirs.length === 0) return undefined
+    const id = dirs.map(entry => entry.name).sort((a, b) => {
+      const am = fs.statSync(path.join(root, a)).mtimeMs
+      const bm = fs.statSync(path.join(root, b)).mtimeMs
+      return bm - am
+    })[0]!
+    return { id, path: path.join(root, id) }
+  }
+
+  private copySnapshot(source: string, destination: string): number {
+    const excluded = new Set(['build', '.git', '.eval', '.submissions', 'node_modules', '__pycache__', '.venv'])
+    let count = 0
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (excluded.has(entry.name)) continue
+        const from = path.join(dir, entry.name)
+        const to = path.join(destination, path.relative(source, from))
+        if (entry.isDirectory()) {
+          fs.mkdirSync(to, { recursive: true })
+          walk(from)
+        } else if (entry.isFile()) {
+          fs.mkdirSync(path.dirname(to), { recursive: true })
+          fs.copyFileSync(from, to)
+          count++
+        }
+      }
+    }
+    fs.mkdirSync(destination, { recursive: true })
+    walk(source)
+    return count
+  }
+
+  /** Host-side submit: snapshot the workspace into the run directory. */
+  hostSubmit(run: RunRecord): { ok: boolean; submission?: string; files?: number; error?: string } {
+    const done = path.join(this.hostDir(run.workspaceId), 'done')
+    if (fs.existsSync(done)) return { ok: false, error: 'task already completed' }
+    const id = Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8)
+    const metaPath = path.join(this.hostDir(run.workspaceId), 'meta.json')
+    if (!fs.existsSync(metaPath)) {
+      fs.mkdirSync(this.hostDir(run.workspaceId), { recursive: true })
+      fs.writeFileSync(metaPath, JSON.stringify({ started_at: run.createdAt / 1000, t_tgt: 10 }), 'utf8')
+    }
+    const destination = path.join(this.hostDir(run.workspaceId), 'submissions', id)
+    if (fs.existsSync(destination)) return { ok: false, error: 'submission id collision' }
+    const files = this.copySnapshot(run.workspacePath, destination)
+    const hash = createHash('sha256')
+    const hashDir = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) hashDir(full)
+        else if (entry.isFile()) {
+          hash.update(path.relative(destination, full))
+          hash.update(fs.readFileSync(full))
+        }
+      }
+    }
+    hashDir(destination)
+    this.appendHostEvent(run.workspaceId, {
+      event: 'submit', time: Date.now() / 1000, submission_id: id,
+      source_hash: 'sha256:' + hash.digest('hex'), files,
+    })
+    return { ok: true, submission: id, files }
+  }
+
+  private async runHostEval(workspaceId: string): Promise<Record<string, unknown>> {
+    const latest = this.hostLatestSubmission(workspaceId)
+    if (latest === undefined) return { stage: 'no_submission', t_can: 0, completed: false, error: '' }
+    const temp = fs.mkdtempSync(path.join(guardRoot(), 'pend-eval-'))
+    try {
+      const submissions = path.join(temp, '.eval', 'submissions')
+      fs.mkdirSync(submissions, { recursive: true })
+      fs.cpSync(latest.path, path.join(submissions, latest.id), { recursive: true })
+      const events = this.hostEvents(workspaceId)
+      fs.writeFileSync(path.join(temp, '.eval', 'events.jsonl'), fs.existsSync(events) ? fs.readFileSync(events) : '', 'utf8')
+      fs.writeFileSync(path.join(temp, '.eval', 'meta.json'), JSON.stringify({ started_at: Date.now() / 1000, t_tgt: 10 }), 'utf8')
+      const resultFile = path.join(temp, 'result.json')
+      const script = path.join(packageRoot(), 'neural-pendulum-eval', 'run_eval.py')
+      const env = { ...process.env, EVAL_RESULT_FILE: resultFile, PYTHONPATH: '', PYTHONHOME: '' }
+      const child = spawn('python3', ['-X', 'utf8', script, '--workspace', temp], { env })
+      let stderr = ''
+      child.stderr?.on('data', chunk => { stderr += String(chunk) })
+      await new Promise<void>((resolve, reject) => {
+        child.on('error', reject)
+        child.on('close', () => resolve())
+      })
+      if (!fs.existsSync(resultFile)) return { stage: 'controller', t_can: 0, completed: false, error: stderr || 'evaluator failed' }
+      const value = JSON.parse(fs.readFileSync(resultFile, 'utf8')) as Record<string, unknown>
+      const error = String(value.error ?? '')
+      let stage = 'controller'
+      if (error.includes('cmake') || error.includes('build')) stage = 'compile'
+      else if (error.includes('selftest') || value.infra_ok === false) stage = 'infra'
+      else if (error.includes('controller')) stage = 'controller'
+      else if (value.success === true) stage = 'completed'
+      else if (value.infra_ok === true) stage = 'scoring'
+      else stage = 'simulation'
+      return { stage, t_can: Number(value.t_can ?? 0), completed: value.success === true, error }
+    } finally {
+      fs.rmSync(temp, { recursive: true, force: true })
+    }
+  }
+
+  /** Host-side test: evaluate the latest host submission and write the event. */
+  async hostTest(run: RunRecord): Promise<Record<string, unknown>> {
+    const done = path.join(this.hostDir(run.workspaceId), 'done')
+    if (fs.existsSync(done)) return { ok: false, stage: 'completed', error: 'task already completed' }
+    const latest = this.hostLatestSubmission(run.workspaceId)
+    if (latest === undefined) {
+      this.appendHostEvent(run.workspaceId, { event: 'test', time: Date.now() / 1000, submission_id: '',
+        stage: 'no_submission', t_can: 0, completed: false, error: '' })
+      return { ok: true, stage: 'no_submission', t_can: 0, completed: false, error: '' }
+    }
+    const value = await this.runHostEval(run.workspaceId)
+    const stage = String(value.stage ?? 'simulation')
+    const tCan = Number(value.t_can ?? 0)
+    const completed = stage === 'completed' && Number.isFinite(tCan)
+    this.appendHostEvent(run.workspaceId, {
+      event: 'test', time: Date.now() / 1000, submission_id: latest.id,
+      stage, t_can: tCan, completed, error: String(value.error ?? ''),
+    })
+    if (completed) fs.writeFileSync(done, String(Date.now() / 1000), 'utf8')
+    return { ok: true, stage, t_can: tCan, completed, error: String(value.error ?? '') }
+  }
+
+  /** Build a temporary workspace containing the host-side authoritative state. */
+  stageHostWorkspace(workspaceId: string): string | undefined {
+    const latest = this.hostLatestSubmission(workspaceId)
+    if (latest === undefined) return undefined
+    const temp = fs.mkdtempSync(path.join(guardRoot(), 'pend-eval-view-'))
+    const state = path.join(temp, '.eval')
+    fs.mkdirSync(path.join(state, 'submissions'), { recursive: true })
+    const root = path.join(this.hostDir(workspaceId), 'submissions')
+    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (entry.isDirectory()) fs.cpSync(path.join(root, entry.name), path.join(state, 'submissions', entry.name), { recursive: true })
+    }
+    const events = this.hostEvents(workspaceId)
+    fs.writeFileSync(path.join(state, 'events.jsonl'), fs.existsSync(events) ? fs.readFileSync(events) : '', 'utf8')
+    const meta = path.join(this.hostDir(workspaceId), 'meta.json')
+    fs.writeFileSync(path.join(state, 'meta.json'), fs.existsSync(meta) ? fs.readFileSync(meta) : JSON.stringify({ started_at: Date.now() / 1000, t_tgt: 10 }), 'utf8')
+    return temp
+  }
+
+
+  /** Bind every main conversation to the configured active task, no install needed. */
+  autoBind(agent: { id: string }, cwd: string): boolean {
+    if (!this.guard.active) return false
+    const taskId = this.guard.configuration.taskId
+    if (taskId === '') return false
+    const definition = TASK_DEFINITIONS[taskId]
+    if (definition === undefined) return false
+    const list = (this.registry as unknown as { list?: () => { id: string; path: string }[] }).list?.() ?? []
+    const matched = list.find(workspace => path.resolve(workspace.path) === path.resolve(cwd))
+    const workspaceId = matched?.id ?? 'path-' + createHash('sha1').update(cwd).digest('hex').slice(0, 16)
+    const runId = this.newRunId()
+    const prompt = this.promptNotice(this.guard.promptFor(cwd, this.materialZip(taskId), definition))
+    const run: RunRecord = {
+      runId, task: definition.id, workspaceId, workspacePath: cwd,
+      sessionId: null, createdAt: Date.now(), startedAt: null, endedAt: null,
+      status: 'prepared', prompt,
+      timeLimitMinutes: this.guard.configuration.timeLimitMinutes,
+    }
+    this.guard.registerRun(run)
+    this.guard.attachRun(agent as never, run)
+    return true
   }
 
   /** The clone URL for a task, honouring the selected source. */
@@ -502,16 +720,8 @@ export class TaskService {
       onFailure: cleanupInstall,
       onSuccess: () => {
         if (definition.needsSetup) this.cleanupWorkspace(checked.path)
-        const runId = this.newRunId()
-        const prompt = this.guard.promptFor(checked.path, this.materialZip(taskId), definition)
-        const run: RunRecord = {
-          runId, task: definition.id, workspaceId, workspacePath: checked.path,
-          sessionId: null, createdAt: Date.now(), startedAt: null, endedAt: null,
-          status: 'prepared', prompt,
-          timeLimitMinutes: this.guard.configuration.timeLimitMinutes,
-        }
-        this.guard.registerRun(run)
-        return { runId, prompt }
+        const prompt = this.promptNotice(this.guard.promptFor(checked.path, this.materialZip(taskId), definition))
+        return { prompt }
       },
     })
     if (job.status === 'failed') cleanupInstall()
@@ -524,19 +734,30 @@ export class TaskService {
     if (definition === undefined) return { ok: false, error: '未知任务：' + taskId }
     const checked = this.check(workspaceId)
     if (!checked.ok) return { ok: false, error: checked.error }
+    if (!this.guard.active) return { ok: false, error: '请先启用评测守护。' }
     const script = path.join(packageRoot(), 'eval', taskId + '.py')
     if (!fs.existsSync(script)) return { ok: false, error: '评测脚本不存在：' + script }
+    const hostView = taskId === NEURAL_PENDULUM_TASK ? this.stageHostWorkspace(workspaceId) : undefined
+    const evalWorkspace = hostView ?? checked.path
     const job = this.jobs.start({
       kind: 'eval', task: taskId, workspaceId,
-      command: ['python3', '-X', 'utf8', script, '--workspace', checked.path],
+      command: ['python3', '-X', 'utf8', script, '--workspace', evalWorkspace],
       cwd: packageRoot(),
       env: {
         PYTHONPATH: '', PYTHONHOME: '',
         EVAL_CIFAR_PROXY: this.proxyValue(this.guard.configuration.cifarProxyUrl),
         EVAL_CIFAR_URL: this.cifarUrl(this.guard.configuration),
+        EVAL_SUBMISSIONS_ROOT: path.join(guardRoot(), 'submissions', workspaceId.replace(/[^A-Za-z0-9_.-]/g, '_')),
       },
     })
     return { ok: true, jobId: job.id }
+  }
+
+  /** Add the optional shared-machine notice to a task prompt. */
+  private promptNotice(prompt: string): string {
+    if (!this.guard.configuration.parallelEval) return prompt
+    return prompt + '\n\n' +
+      '注意：当前机器可能同时运行其他 agent 的评测/训练任务。运行环境的 CPU、内存、IO 与可用并发会因其他 agent 的行为而波动；请自行适应这种波动，不要假设环境稳定，也不要依赖固定墙钟时间或固定可用资源来判断进度。'
   }
 
   /** Copy the packaged workspace.zip to a stable material path for install/manual use. */
@@ -579,23 +800,8 @@ export class TaskService {
       if (checked.empty) this.wipeInstallWorkspace(checked.path)
       return { ok: false, workspaceId, workspacePath: checked.path, error: '任务准备失败：' + (error instanceof Error ? error.message : String(error)) }
     }
-    const runId = this.newRunId()
-    const prompt = promptOverride ?? this.guard.promptFor(checked.path, this.materialZip(taskId), definition)
-    const run: RunRecord = {
-      runId,
-      task: definition.id,
-      workspaceId,
-      workspacePath: checked.path,
-      sessionId: null,
-      createdAt: Date.now(),
-      startedAt: null,
-      endedAt: null,
-      status: 'prepared',
-      prompt,
-      timeLimitMinutes: this.guard.configuration.timeLimitMinutes,
-    }
-    this.guard.registerRun(run)
-    return { ok: true, runId, workspaceId, workspacePath: checked.path, prompt }
+    const prompt = this.promptNotice(promptOverride ?? this.guard.promptFor(checked.path, this.materialZip(taskId), definition))
+    return { ok: true, workspaceId, workspacePath: checked.path, prompt }
   }
 
   /** The prompt for manual copying, without installing anything. */
@@ -603,7 +809,7 @@ export class TaskService {
     const definition = TASK_DEFINITIONS[taskId]
     if (definition === undefined) return ''
     const workspace = this.registry.get(workspaceId)
-    return this.guard.promptFor(workspace?.path ?? '', this.materialZip(taskId), definition)
+    return this.promptNotice(this.guard.promptFor(workspace?.path ?? '', this.materialZip(taskId), definition))
   }
 
   /** Filesystem paths for the manual channel. */
@@ -613,7 +819,7 @@ export class TaskService {
     const workspace = this.registry.get(workspaceId)
     return {
       source: this.materialZip(taskId),
-      prompt: this.guard.promptFor(workspace?.path ?? '', this.materialZip(taskId), definition),
+      prompt: this.promptNotice(this.guard.promptFor(workspace?.path ?? '', this.materialZip(taskId), definition)),
     }
   }
 

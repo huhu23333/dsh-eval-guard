@@ -1,6 +1,6 @@
 {
   "name": "dsh-eval-guard",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "type": "module",
   "description": "Evaluation guard for DSH: workspace-only filesystem, no network/subagents, wall-clock limits, and task installation for the meow-ai-arena tank task.",
   "license": "MIT",
@@ -46,7 +46,8 @@
     "cordis.patch.yml",
     "README.md",
     "scripts",
-    "neural-cifar-eval"
+    "neural-cifar-eval",
+    "neural-pendulum-eval"
   ],
   "scripts": {
     "build": "tsdown",

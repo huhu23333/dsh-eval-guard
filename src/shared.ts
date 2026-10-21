@@ -43,6 +43,8 @@ export const NEURAL_FP32_TASK = 'neural-fp32'
 export const NEURAL_FP32_TASK_LABEL = 'Neural-FP32 · 运算与性能'
 export const NEURAL_CIFAR_TASK = 'neural-cifar'
 export const NEURAL_CIFAR_TASK_LABEL = 'Neural-CIFAR · 从零训练图像分类'
+export const NEURAL_PENDULUM_TASK = 'neural-pendulum'
+export const NEURAL_PENDULUM_TASK_LABEL = 'Neural-Pendulum · 从零训练三节摆控制器'
 
 /** One validated clone remote for a task. */
 export interface TaskRemote {

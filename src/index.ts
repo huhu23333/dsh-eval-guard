@@ -13,6 +13,7 @@ import { Config } from './config.ts'
 import { Guard } from './guard.ts'
 import { registerRoutes } from './routes.ts'
 import { TANK_DEFINITION, TASKS, TaskService } from './task.ts'
+import { registerAgentSubmissionTools } from './submission-tools.ts'
 import { configureRuntimeContext } from './sandbox.ts'
 
 export { Config } from './config.ts'
@@ -48,6 +49,8 @@ export function apply(ctx: Context, config: Partial<import('./config.ts').Config
     }
     const guard = new Guard(ctx, services, config, TANK_DEFINITION)
     const tasks = new TaskService(guard, services.workspaceRegistry)
+    guard.onRunAssociated = (agent, run) => { registerAgentSubmissionTools(agent as any, guard, tasks) }
+    guard.onAutoRun = (agent, cwd) => tasks.autoBind(agent as any, cwd)
     registerRoutes(ctx, guard, tasks)
     child.inject(['settings'], (settingsCtx) => {
       const settings = settingsCtx.get('settings') as {

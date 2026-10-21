@@ -11,6 +11,8 @@ export const zh = {
   'settings.runningForce': '强行开启',
   'settings.timeLimit': '开启最长时长',
   'settings.timeLimitHint': '从每条用户消息发送时开始计时；到点只终止当前轮次，并递归清理子代理与后台任务。',
+  'settings.parallelEval': '多 agent 并行评测',
+  'settings.parallelEvalHint': '启用后，安装任务时会在提示词中提醒 agent：运行环境可能因其他 agent 的行为而波动，需要自行适应。',
   'settings.minutes': '分钟',
   'settings.forbidden': '额外禁止路径',
   'settings.forbiddenHint': '每行一个绝对路径；# 开头为注释；! 开头表示在禁止范围内放开该子路径；按行顺序生效。默认空。',
@@ -54,6 +56,8 @@ export const zh = {
   'settings.recent': '最近事件',
   'settings.none': '暂无。',
   'settings.warningTitle': '评测守护警告',
+  'settings.cifarProxy': 'CIFAR 下载代理',
+  'settings.cifarMirror': 'CIFAR 下载镜像',
   'settings.close': '关闭',
 } as const
 
@@ -69,6 +73,8 @@ export const en: Record<Key, string> = {
   'settings.runningForce': 'Force enable',
   'settings.timeLimit': 'Enable time limit',
   'settings.timeLimitHint': 'The clock starts at each user message; at the deadline only the current turn is cancelled, and subagents/jobs are cleaned up recursively.',
+  'settings.parallelEval': 'Parallel agent evaluation',
+  'settings.parallelEvalHint': 'When enabled, install prompts warn the agent that the runtime may fluctuate because other agents share the machine; it must adapt.',
   'settings.minutes': 'minutes',
   'settings.forbidden': 'Extra forbidden paths',
   'settings.forbiddenHint': 'One absolute path per line; # comments; ! re-allows a subpath; later lines win. Empty by default.',

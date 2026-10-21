@@ -40,6 +40,8 @@ interface Draft {
   cifarProxyUrl: string
   cifarMirror: string
   customCifarUrl: string
+  parallelEval: boolean
+  taskId: string
 }
 
 const EMPTY: Draft = {
@@ -58,6 +60,8 @@ const EMPTY: Draft = {
   cifarProxyUrl: '',
   cifarMirror: 'toronto',
   customCifarUrl: '',
+  parallelEval: false,
+  taskId: '',
 }
 
 const box: CSSProperties = { border: '1px solid var(--vscode-panel-border, #3c3c3c)', borderRadius: 8, padding: 14, marginBottom: 14 }
@@ -87,6 +91,8 @@ function normalize(value: Record<string, unknown> | undefined): Draft {
     cifarProxyUrl: typeof value?.cifarProxyUrl === 'string' ? value.cifarProxyUrl : '',
     cifarMirror: typeof value?.cifarMirror === 'string' && value.cifarMirror !== '' ? value.cifarMirror : 'toronto',
     customCifarUrl: typeof value?.customCifarUrl === 'string' ? value.customCifarUrl : '',
+    parallelEval: value?.parallelEval === true,
+    taskId: typeof value?.taskId === 'string' ? value.taskId : '',
   }
 }
 
@@ -159,8 +165,11 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
   }, [])
 
   useEffect(() => {
-    if (state !== null && state.tasks.length > 0 && (taskId === '' || !state.tasks.some(task => task.id === taskId))) setTaskId(state.tasks[0]!.id)
-  }, [state, taskId])
+    if (state !== null && state.tasks.length > 0 && (taskId === '' || !state.tasks.some(task => task.id === taskId))) {
+      if (draft.taskId !== '' && state.tasks.some(task => task.id === draft.taskId)) setTaskId(draft.taskId)
+      else setTaskId(state.tasks[0]!.id)
+    }
+  }, [state, taskId, draft.taskId])
 
   const ready = snapshot.status === 'ready' && snapshot.writable
   const save = async (patch: Partial<Draft>): Promise<void> => {
@@ -186,6 +195,7 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
 
   const selectTask = (next: string): void => {
     setTaskId(next)
+    void save({ taskId: next })
     try { localStorage.setItem('evalGuard.taskId', next) } catch { /* storage is optional */ }
     setCheck(null); setManual(null); setPrompt(''); setJob(null); setJobNotice('')
     if (workspaceId !== '') loadManual(workspaceId, next)
@@ -228,6 +238,7 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
 
   const install = async (): Promise<void> => {
     if (workspaceId === '' || taskId === '') return
+    await save({ taskId })
     setError(''); setNotice(''); setJobNotice('')
     const checked = await fetch(CHECK_ROUTE + '?workspaceId=' + encodeURIComponent(workspaceId)).then(readJson<CheckResult>)
     setCheck(checked)
@@ -244,6 +255,7 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
 
   const evaluate = async (): Promise<void> => {
     if (workspaceId === '' || taskId === '') return
+    await save({ taskId })
     setError(''); setNotice(''); setJobNotice('')
     const result = await fetch(EVAL_ROUTE, {
       method: 'POST', headers: { 'content-type': 'application/json' },
@@ -400,6 +412,8 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
     <section style={box}>
       <div style={row}>
         <label><input type="checkbox" checked={draft.timeLimitEnabled} disabled={!ready} onChange={event => void save({ timeLimitEnabled: event.target.checked })} /> {t('settings.timeLimit')}</label>
+        <label style={{ marginLeft: 16 }}><input type="checkbox" checked={draft.parallelEval} disabled={!ready} onChange={event => void save({ parallelEval: event.target.checked })} /> {t('settings.parallelEval')}</label>
+        <p style={note}>{t('settings.parallelEvalHint')}</p>
         <input type="number" min={1} max={1440} value={draft.timeLimitMinutes} disabled={!ready}
           style={{ width: 90 }} onChange={event => edit({ timeLimitMinutes: Number(event.target.value) })}
           onBlur={() => void save({ timeLimitMinutes: draft.timeLimitMinutes })} />
