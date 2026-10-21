@@ -8,7 +8,7 @@
 
 - 从三杆全部向下的固定初始状态起摆
 - 保持三根杆全部向上至少 t_tgt = 10.0 秒
-- 同时保证神经网络基础设施全部通过公开测试
+- 同时保证神经网络基础设施通过固定头文件契约并通过隐藏测试
 
 允许使用 PyTorch 做开发阶段的自查和数值对照。最终提交源码中不得出现 torch，评测环境不提供 Python/torch。
 
@@ -149,16 +149,18 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j4
 ~~~
 
-必须产出两个入口：
+必须产出：
 
 ~~~
-build/nn_selftest
+build/libnn.a
 build/control
 ~~~
 
 ### 1. 基础设施入口
 
-build/nn_selftest 必须运行公开基础设施测试并返回 0 表示通过。
+基础设施实现放在 `src/nn/*.cpp`，由 CMake 构建为 `build/libnn.a`；公开头文件 `include/nn/nn.hpp` 是固定 API 契约，不得修改声明或语义。
+
+评测侧会独立编译隐藏测试并链接 `build/libnn.a`，不使用你写的 `nn_selftest` 作为验证依据。`build/nn_selftest` 可选，仅用于你自己的开发自测。
 
 必须包含的基础设施：
 
@@ -177,7 +179,7 @@ build/nn_selftest 必须运行公开基础设施测试并返回 0 表示通过�
 
 占位符或空实现会被判为基础设施错误。
 
-公开测试文件在工作区中，评测时使用评测侧的干净副本。
+隐藏测试由评测侧注入，使用固定种子和独立数据，不复制到工作区。
 
 ### 2. 控制器入口
 
@@ -270,7 +272,7 @@ t_can >= 10.0
 - 提交源码中不得出现 torch
 - 评测环境无 Python/torch
 - 无网络
-- 不得修改仿真器或公开测试
+- 不得修改仿真器或公开头文件 `include/nn/nn.hpp`
 - 不得提交编译产物
 - 赛后人工审核：控制器必须是神经网络，且必须实际调用你实现的神经网络基础设施；手写控制律、查表、固定轨迹或外部依赖会被判无效
 
@@ -350,9 +352,9 @@ T_done 是第一次返回 completed 的测试请求时间。
 
 ## 建议工作顺序
 
-1. 阅读公开测试和 tools/sim 协议
+1. 阅读 `include/nn/nn.hpp` 契约与 tools/sim 协议
 2. 先实现最小可用的 tensor/算子/反向/优化器
-3. 跑通 nn_selftest
+3. 用自测和 `include/nn/nn.hpp` 契约检查基础设施
 4. 用 tools/sim 采集数据并训练控制器
 5. 反复提交和测试，优先把 t_can 提升到 10 秒
 6. 完成后立即总结

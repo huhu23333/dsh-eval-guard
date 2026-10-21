@@ -193,13 +193,26 @@ def main() -> int:
         if made.returncode != 0:
             return emit(fail('build failed\n' + (made.stdout + made.stderr)[-4000:], workspace=workspace))
 
-        selftest = candidate / 'build' / 'nn_selftest'
-        if not selftest.is_file():
-            return emit(fail('build/nn_selftest missing', workspace=workspace))
-        st = subprocess.run([str(selftest)], cwd=str(candidate), capture_output=True,
+        lib = candidate / 'build' / 'libnn.a'
+        if not lib.is_file():
+            return emit(fail('build/libnn.a missing', workspace=workspace))
+        hidden = HERE.parent / 'assets' / 'neural-pendulum' / 'hidden' / 'test_infra.cpp'
+        if not hidden.is_file():
+            return emit(fail('hidden infrastructure test missing', workspace=workspace))
+        infra_exe = root / 'test_infra'
+        compiler = shutil.which('g++')
+        if compiler is None:
+            return emit(fail('g++ missing', workspace=workspace))
+        ic = subprocess.run([compiler, '-std=c++17', '-O3', '-pthread',
+                             '-I', str(candidate / 'include'), str(hidden), str(lib),
+                             '-lm', '-o', str(infra_exe)], cwd=str(root), capture_output=True,
+                            text=True, env=env, timeout=300)
+        if ic.returncode != 0:
+            return emit(fail('hidden infrastructure test compile failed\n' + (ic.stdout + ic.stderr)[-4000:], workspace=workspace))
+        it = subprocess.run([str(infra_exe)], cwd=str(root), capture_output=True,
                             text=True, env=env, timeout=600)
-        if st.returncode != 0:
-            return emit(fail('infrastructure self-test failed\n' + (st.stdout + st.stderr)[-4000:], workspace=workspace))
+        if it.returncode != 0:
+            return emit(fail('hidden infrastructure test failed\n' + (it.stdout + it.stderr)[-4000:], workspace=workspace))
 
         control_path = candidate / 'build' / 'control'
         if not control_path.is_file():

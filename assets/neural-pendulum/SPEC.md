@@ -18,7 +18,7 @@ agent 必须：
 1. 从零实现一套神经网络基础设施（张量、算子、反向传播、优化器、模型序列化、线程池）。
 2. 使用该基础设施训练一个神经网络控制器。
 3. 控制预编译双驱动三节摆：第一、第三关节施加有限力矩，中间关节被动，从全向下起摆，并保持三根杆全部向上至少 t_tgt = 10.0 s。
-4. 保证基础设施通过公开测试。
+4. 保证基础设施实现 `include/nn/nn.hpp` 契约并通过隐藏测试。
 5. 提交的源码中不得出现 torch，测试环境不提供 Python/torch。
 
 允许在开发阶段使用 PyTorch 做数值自查和参考，但提交源码必须完全独立。
@@ -179,15 +179,17 @@ cmake --build build -j4
 必须产生：
 
 ~~~
-build/nn_selftest
+build/libnn.a
 build/control
 ~~~
 
 ### 8.1 基础设施测试入口
 
-build/nn_selftest 必须运行公开基础设施测试并返回 0 表示通过。
+基础设施实现位于 `src/nn/*.cpp`，由 CMake 构建静态库 `build/libnn.a`；公开头文件 `include/nn/nn.hpp` 为不可修改的 API 契约。
 
-公共测试覆盖：
+评测侧独立编译隐藏测试并链接 `build/libnn.a`，不以 `build/nn_selftest` 作为通过依据；`nn_selftest` 仅供 agent 自测。
+
+隐藏测试覆盖：
 
 - fp32 tensor、形状与广播
 - elementwise add/sub/mul/div
