@@ -6,11 +6,11 @@
 
 目标：
 
-- 从三杆全部向下的固定初始状态起摆
+- 训练时从随机小扰动、评测时从固定初始状态起摆
 - 保持三根杆全部向上至少 t_tgt = 10.0 秒
 - 同时保证神经网络基础设施通过固定头文件契约并通过隐藏测试
 
-允许使用 PyTorch 做开发阶段的自查和数值对照。最终提交源码中不得出现 torch，评测环境不提供 Python/torch。
+开发阶段可以使用 Python/PyTorch 做离线数值对照和实验；最终提交的基础设施和控制器源码必须是纯 C++，不得出现 torch，评测环境不提供 Python/torch。
 
 ## 环境
 
@@ -160,7 +160,7 @@ build/control
 
 基础设施实现放在 `src/nn/*.cpp`，由 CMake 构建为 `build/libnn.a`；公开头文件 `include/nn/nn.hpp` 是固定 API 契约，不得修改声明或语义。
 
-评测侧会独立编译隐藏测试并链接 `build/libnn.a`，不使用你写的 `nn_selftest` 作为验证依据。`build/nn_selftest` 可选，仅用于你自己的开发自测。
+评测侧会独立编译隐藏测试并链接 `build/libnn.a`。
 
 必须包含的基础设施：
 
@@ -243,8 +243,17 @@ controller
 simulation
 scoring
 completed
-busy
 ~~~
+
+阶段含义：
+
+- no_submission：还没有提交快照
+- compile：CMake 构建 `libnn.a` / `control` 失败
+- infra：隐藏基础设施测试编译、链接或运行失败
+- controller：控制器启动、协议、崩溃、超时或输出非法
+- simulation：隐藏仿真推进异常、NaN 或超时
+- scoring：测试有效，但 `t_can < 10.0`
+- completed：基础设施和仿真均通过，且 `t_can >= 10.0`
 
 最终排行分数不会返回给你，只用于赛后排名。
 

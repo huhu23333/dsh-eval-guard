@@ -394,6 +394,10 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
         <button style={button} disabled={workspaceId === '' || taskId === '' || job?.status === 'running'} onClick={() => void evaluate()}>{t('settings.evaluate')}</button>
       </div>
       <p style={note}>{t('settings.evalHint')}</p>
+      <div style={row}>
+        <label><input type="checkbox" checked={draft.parallelEval} disabled={!ready} onChange={event => void save({ parallelEval: event.target.checked })} /> {t('settings.parallelEval')}</label>
+      </div>
+      <p style={note}>{t('settings.parallelEvalHint')}</p>
       {workspaces.length === 0 && <p style={note}>{t('settings.noWorkspaces')}</p>}
       {check !== null && !check.empty && <p style={{ ...note, color: '#d99' }}>{t('settings.nonEmpty')} ({check.entries.slice(0, 6).join(', ')})</p>}
       {notice !== '' && <p style={{ ...note, color: '#7c7' }}>{notice}</p>}
@@ -412,8 +416,6 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
     <section style={box}>
       <div style={row}>
         <label><input type="checkbox" checked={draft.timeLimitEnabled} disabled={!ready} onChange={event => void save({ timeLimitEnabled: event.target.checked })} /> {t('settings.timeLimit')}</label>
-        <label style={{ marginLeft: 16 }}><input type="checkbox" checked={draft.parallelEval} disabled={!ready} onChange={event => void save({ parallelEval: event.target.checked })} /> {t('settings.parallelEval')}</label>
-        <p style={note}>{t('settings.parallelEvalHint')}</p>
         <input type="number" min={1} max={1440} value={draft.timeLimitMinutes} disabled={!ready}
           style={{ width: 90 }} onChange={event => edit({ timeLimitMinutes: Number(event.target.value) })}
           onBlur={() => void save({ timeLimitMinutes: draft.timeLimitMinutes })} />

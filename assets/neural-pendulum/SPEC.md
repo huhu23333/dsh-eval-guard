@@ -187,7 +187,7 @@ build/control
 
 基础设施实现位于 `src/nn/*.cpp`，由 CMake 构建静态库 `build/libnn.a`；公开头文件 `include/nn/nn.hpp` 为不可修改的 API 契约。
 
-评测侧独立编译隐藏测试并链接 `build/libnn.a`，不以 `build/nn_selftest` 作为通过依据；`nn_selftest` 仅供 agent 自测。
+评测侧独立编译隐藏测试并链接 `build/libnn.a`。
 
 隐藏测试覆盖：
 
@@ -297,20 +297,17 @@ infra_ok == true
 
 - 测试使用请求时刻的最新提交快照
 - 测试期间的新提交不影响本次测试
-- 同时只允许一个测试
-- 测试进行中再次请求：stage = busy，score = -1
 
 ### 测试阶段枚举
 
 ~~~
-no_submission   没有提交
-compile         编译失败/超时
-infra           基础设施测试失败
-controller      控制器接口/崩溃/超时/非法输出
+no_submission   没有提交快照
+compile         CMake 构建 libnn.a / control 失败
+infra           隐藏基础设施测试编译、链接或运行失败
+controller      控制器启动/协议/崩溃/超时/非法输出
 simulation      仿真异常/NaN/仿真超时
 scoring         正常测试但 t_can < t_tgt
 completed       t_can >= t_tgt，任务完成
-busy            已有测试正在进行
 ~~~
 
 ### 返回给 agent 的测试结果
@@ -406,7 +403,6 @@ infra_ok = true
 - 基础设施测试失败
 - 控制器加载/接口/崩溃/超时/非法输出
 - 仿真 NaN/异常/超时
-- 测试请求 busy
 - 测试请求本身失败
 
 异常只影响当前测试请求之后的区间，直到下一次成功测试。

@@ -70,9 +70,11 @@ static void deriv(const State& s, const std::array<double,N>& tau, State& out) {
     G[i]=GRAV*std::sin(s.theta[i])*GCOEF[i];
   }
   // joint damping: b * D^T D omega, D lower bidiagonal with -1 previous
+  std::array<double,N> edge{};
+  for(int i=0;i<N;i++) edge[i] = s.omega[i] - (i>0?s.omega[i-1]:0.0);
   for(int i=0;i<N;i++){
-    double e=s.omega[i] - (i>0?s.omega[i-1]:0.0);
-    Q[i] -= DAMP*e;
+    double e = edge[i] - (i+1<N ? edge[i+1] : 0.0);
+    Q[i] = -DAMP*e;
   }
   for(int i=0;i<N;i++) rhs[i]=tau[i]-C[i]-G[i]+Q[i];
   solve3(M, rhs, out.omega);

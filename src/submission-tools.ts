@@ -7,29 +7,16 @@ import type { Guard } from './guard.ts'
 import type { TaskService } from './task.ts'
 import { NEURAL_PENDULUM_TASK } from './shared.ts'
 
-interface ToolService {
-  register(definition: unknown): () => void
-}
-
-interface ToolRunContext {
-  agent?: { id?: string }
-}
-
-interface AgentWithTools {
-  id: string
-  ctx?: { tools?: ToolService }
-}
+interface ToolService { register(definition: unknown): () => void }
+interface ToolRunContext { agent?: { id?: string } }
+interface AgentWithTools { id: string; ctx?: unknown }
 
 const OUTPUT_SCHEMA = {
   type: 'object',
   additionalProperties: true,
   properties: {
-    ok: { type: 'boolean' },
-    submission: { type: 'string' },
-    files: { type: 'number' },
-    stage: { type: 'string' },
-    t_can: { type: 'number' },
-    completed: { type: 'boolean' },
+    ok: { type: 'boolean' }, submission: { type: 'string' }, files: { type: 'number' },
+    stage: { type: 'string' }, t_can: { type: 'number' }, completed: { type: 'boolean' },
     error: { type: 'string' },
   },
   required: ['ok'],
@@ -49,8 +36,6 @@ function resolve(guard: Guard, exec: ToolRunContext) {
 
 /** Install the task tools into one agent's own scoped registry. */
 export function registerAgentSubmissionTools(agent: AgentWithTools, guard: Guard, tasks: TaskService): void {
-  const tools = agent.ctx?.tools
-  if (tools === undefined) return
   const submit = {
     name: 'eval_submit',
     description: 'Submit the current workspace source as a new immutable snapshot for the active Neural-Pendulum run. Submission itself does not change the score.',
@@ -67,6 +52,25 @@ export function registerAgentSubmissionTools(agent: AgentWithTools, guard: Guard
     timeoutMs: 15 * 60_000,
     execute: async (_args: unknown, exec: ToolRunContext) => tasks.hostTest(resolve(guard, exec)),
   }
-  tools.register(submit)
-  tools.register(test)
+  let registered = false
+  const install = (tools: ToolService | undefined): void => {
+    if (tools === undefined || registered) return
+    registered = true
+    tools.register(submit)
+    tools.register(test)
+  }
+  const ctx = agent.ctx as {
+    tools?: ToolService
+    inject?: (services: string[], cb: (child: any) => void) => void
+  } | undefined
+  if (ctx === undefined) return
+  if (ctx.tools !== undefined) {
+    install(ctx.tools)
+    return
+  }
+  if (typeof ctx.inject === 'function') {
+    ctx.inject(['tools'], (child: any) => {
+      install((child.get?.('tools') ?? child.tools) as ToolService | undefined)
+    })
+  }
 }
