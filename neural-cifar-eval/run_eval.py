@@ -25,25 +25,22 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
-from common import clean_copy
+from common import child_env, clean_copy
 
 HIDDEN = HERE / 'hidden'
 OPS = HERE / 'ops_eval.py'
 
 
 def run(cmd, cwd, timeout=1800):
-    env = dict(os.environ)
-    env.pop('PYTHONPATH', None)
-    env.pop('PYTHONHOME', None)
     return subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
-                          encoding='utf-8', errors='replace', env=env, timeout=timeout)
+                          encoding='utf-8', errors='replace', env=child_env(), timeout=timeout)
 
 
 def build_candidate(workspace: Path, root: Path):
     candidate = root / 'candidate'
     clean_copy(workspace, candidate, ignore_names=(
         'data', 'build', 'work', '.tmp', '.cache', '.home', '.config', '.local',
-        '.git', '.venv', 'node_modules',
+        '.git', '.venv', 'node_modules', '.eval', '.submissions',
     ))
     source = candidate
     if not (source / 'CMakeLists.txt').is_file() and (candidate / 'workspace' / 'CMakeLists.txt').is_file():
@@ -82,33 +79,48 @@ def model_metrics(source: Path, threads: int, budget: float | None = None) -> di
         return {'executable': False, 'accuracy': None, 'fps': None,
                 'mean_seconds_per_image': None, 'error': 'hidden validation data missing; run fetch_cifar.py',
                 'meets_4thread_budget': None}
-    n = labels.stat().st_size
-    out = source / f'predictions_{threads}.bin'
-    if out.exists():
-        out.unlink()
-    cmd = [str(infer), '--model', str(source / 'model'),
-           '--images', str(images), '--out', str(out), '--threads', str(threads)]
-    started = time.perf_counter()
+    # Read the truth labels into memory and hand the candidate a COPY of the
+    # images in an isolated directory: the labels file must never be reachable
+    # by deriving it from the --images argument.
     try:
-        proc = run(cmd, source, 1200)
-    except subprocess.TimeoutExpired:
-        return {'executable': False, 'accuracy': None, 'fps': None,
-                'mean_seconds_per_image': None, 'error': 'inference timeout',
-                'meets_4thread_budget': None}
-    elapsed = time.perf_counter() - started
-    if proc.returncode != 0:
-        return {'executable': False, 'accuracy': None, 'fps': None,
-                'mean_seconds_per_image': None,
-                'error': (proc.stderr or proc.stdout or 'infer failed')[-1000:],
-                'meets_4thread_budget': None}
-    try:
-        pred = read_preds(out, n)
-        true = np.frombuffer(labels.read_bytes(), dtype=np.uint8)
-        acc = float((pred == true).mean() * 100.0)
-    except Exception as exc:
+        labels_bytes = labels.read_bytes()
+        n = len(labels_bytes)
+        isolated = Path(tempfile.mkdtemp(prefix='cifar-images-'))
+        isolated_images = isolated / 'images.bin'
+        shutil.copyfile(images, isolated_images)
+    except OSError as exc:
         return {'executable': False, 'accuracy': None, 'fps': None,
                 'mean_seconds_per_image': None, 'error': str(exc),
                 'meets_4thread_budget': None}
+    out = source / f'predictions_{threads}.bin'
+    try:
+        if out.exists():
+            out.unlink()
+        cmd = [str(infer), '--model', str(source / 'model'),
+               '--images', str(isolated_images), '--out', str(out), '--threads', str(threads)]
+        started = time.perf_counter()
+        try:
+            proc = run(cmd, source, 1200)
+        except subprocess.TimeoutExpired:
+            return {'executable': False, 'accuracy': None, 'fps': None,
+                    'mean_seconds_per_image': None, 'error': 'inference timeout',
+                    'meets_4thread_budget': None}
+        elapsed = time.perf_counter() - started
+        if proc.returncode != 0:
+            return {'executable': False, 'accuracy': None, 'fps': None,
+                    'mean_seconds_per_image': None,
+                    'error': (proc.stderr or proc.stdout or 'infer failed')[-1000:],
+                    'meets_4thread_budget': None}
+        try:
+            pred = read_preds(out, n)
+            true = np.frombuffer(labels_bytes, dtype=np.uint8)
+            acc = float((pred == true).mean() * 100.0)
+        except Exception as exc:
+            return {'executable': False, 'accuracy': None, 'fps': None,
+                    'mean_seconds_per_image': None, 'error': str(exc),
+                    'meets_4thread_budget': None}
+    finally:
+        shutil.rmtree(isolated, ignore_errors=True)
     fps = n / elapsed if elapsed > 0 else None
     mean_s = elapsed / n if n else None
     result = {'executable': True, 'accuracy': acc, 'fps': fps,
@@ -133,10 +145,8 @@ def main() -> int:
         # Reuse the existing FP32 operator evaluator, but run it in a temp
         # copy so its build output does not affect the model workspace.
         ops_result = root / 'ops.json'
-        env = dict(os.environ)
+        env = child_env()
         env['EVAL_RESULT_FILE'] = str(ops_result)
-        env.pop('PYTHONPATH', None)
-        env.pop('PYTHONHOME', None)
         try:
             proc = subprocess.run([sys.executable, '-X', 'utf8', str(OPS), '--workspace', str(workspace)],
                                   cwd=str(HERE), capture_output=True, text=True,

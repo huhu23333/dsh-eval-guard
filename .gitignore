@@ -5,7 +5,11 @@ lib/
 .wrap-test-*
 .ptc-test-*
 .runtime-test-*
+.matrix-test-*
+.simulate-test-*
+.python-test-*
 test/dist/
 eval/**/__pycache__/
 eval/arena/*/workspace/build/
 eval/arena/*/workspace/submission/
+__pycache__/

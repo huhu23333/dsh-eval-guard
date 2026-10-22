@@ -12,6 +12,19 @@ from pathlib import Path
 
 EVAL_ROOT = Path(__file__).resolve().parent
 
+HOST_EVAL_KEYS = frozenset({
+    'EVAL_RESULT_FILE', 'EVAL_JOB_DIR', 'EVAL_INSTALL_TOKEN',
+    'EVAL_BASELINE_DIR', 'EVAL_VENV_MANIFEST',
+})
+
+
+def child_env() -> dict[str, str]:
+    """Environment for child processes that may run candidate code."""
+    return {
+        key: value for key, value in os.environ.items()
+        if key not in HOST_EVAL_KEYS and key not in {'PYTHONPATH', 'PYTHONHOME'}
+    }
+
 
 def parse_workspace() -> Path:
     parser = argparse.ArgumentParser(description='single-workspace evaluator')

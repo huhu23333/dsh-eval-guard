@@ -31,6 +31,9 @@ function resolve(guard: Guard, exec: ToolRunContext) {
   const run = guard.runForSession(exec.agent?.id)
   if (run === undefined) throw new Error('eval task run is not active for this session')
   if (run.task !== NEURAL_PENDULUM_TASK) throw new Error('this tool is only available for the neural-pendulum task')
+  // A timed-out or otherwise ended run must not accept further submissions or
+  // tests; only an active run may mutate its submission history.
+  if (run.status !== 'active') throw new Error('eval task run is not active (status: ' + run.status + ')')
   return run
 }
 
@@ -49,7 +52,7 @@ export function registerAgentSubmissionTools(agent: AgentWithTools, guard: Guard
     description: 'Run a host-side evaluation of the latest submitted snapshot and return stage, t_can, completed and error. Only successful tests update the score.',
     parameters: { type: 'object', properties: {} },
     output: { schema: OUTPUT_SCHEMA, render },
-    timeoutMs: 15 * 60_000,
+    timeoutMs: 22 * 60_000,
     execute: async (_args: unknown, exec: ToolRunContext) => tasks.hostTest(resolve(guard, exec)),
   }
   let registered = false

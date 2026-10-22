@@ -8,9 +8,9 @@
 
 - 训练时从随机小扰动、评测时从固定初始状态起摆
 - 保持三根杆全部向上至少 t_tgt = 10.0 秒
-- 同时保证神经网络基础设施通过固定头文件契约并通过隐藏测试
+- 同时保证神经网络基础设施通过 build/nn_task 固定 CLI 的数值评测
 
-开发阶段可以使用 Python/PyTorch 做离线数值对照和实验；最终提交的基础设施和控制器源码必须是纯 C++，不得出现 torch，评测环境不提供 Python/torch。
+开发阶段可以使用 Python/PyTorch 做离线数值对照和实验；最终提交的基础设施和控制器源码必须是纯 C++，不得出现 torch，候选运行时不提供 Python/torch。
 
 ## 环境
 
@@ -100,7 +100,7 @@ t_can = 三根杆同时处于全向上容差内的最长连续时间
 
 ~~~
 t_can >= t_tgt
-且基础设施测试全部通过
+且神经网络基础设施数值评测全部通过
 ~~~
 
 任务完成，计时停止。
@@ -152,34 +152,140 @@ cmake --build build -j4
 必须产出：
 
 ~~~
-build/libnn.a
+build/nn_task
 build/control
 ~~~
 
-### 1. 基础设施入口
+工作区模板 CMakeLists.txt 默认从 `src/core/*.cpp` 构建共享静态库，从 `src/nn_task.cpp` 和 `src/control.cpp` 构建两个可执行文件。可以按需调整目录结构和 CMakeLists.txt，但必须从零构建出上面两个二进制。
 
-基础设施实现放在 `src/nn/*.cpp`，由 CMake 构建为 `build/libnn.a`；公开头文件 `include/nn/nn.hpp` 是固定 API 契约，不得修改声明或语义。
+### 1. 神经网络基础设施入口 build/nn_task
 
-评测侧会独立编译隐藏测试并链接 `build/libnn.a`。
+基础设施通过固定 CLI 暴露，评测会逐操作调用。所有输入/输出文件都是连续 row-major float32，所有数值输出也必须写为 float32。
 
-必须包含的基础设施：
+#### 逐元素
 
-- fp32 tensor，形状检查与广播
-- elementwise add/sub/mul/div
-- matmul / linear
-- relu / softmax
-- layernorm
-- conv2d，支持 stride/padding/dilation/groups
-- MSE
-- matmul/linear/relu/layernorm/conv2d/MSE 反向
-- SGD momentum
-- AdamW
-- 模型保存/加载
-- 线程池
+~~~bash
+build/nn_task elementwise --op add|sub|mul|div --shape 64,256 --a A --b B --out O
+~~~
 
-占位符或空实现会被判为基础设施错误。
+支持广播：从尾部对齐，维度为 1 可广播。
 
-隐藏测试由评测侧注入，使用固定种子和独立数据，不复制到工作区。
+#### 矩阵乘法
+
+~~~bash
+build/nn_task matmul --a-shape M,K --b-shape K,N --a A --b B --out O
+~~~
+
+只要求 2D 输入。
+
+#### Linear
+
+~~~bash
+build/nn_task linear --x-shape B,IN --w-shape OUT,IN --b-shape OUT --x X --w W --bias B --out O
+~~~
+
+计算 `O = X @ W^T + bias`。
+
+#### 激活
+
+~~~bash
+build/nn_task relu --shape N --x X --out O
+build/nn_task softmax --shape B,C --x X --out O
+~~~
+
+Softmax 沿最后一维。
+
+#### LayerNorm
+
+~~~bash
+build/nn_task layernorm --shape B,C --x X --gamma G --beta B --eps 1e-5 --out O
+~~~
+
+对最后一维归一化；gamma/beta 形状为 `C`。
+
+#### MSE
+
+~~~bash
+build/nn_task mse --pred-shape S --target-shape S --pred P --target T --out O
+~~~
+
+输出 1 个 float32，为所有元素平均平方误差。
+
+#### Conv2d
+
+~~~bash
+build/nn_task conv2d --x-shape N,C,H,W --w-shape O,Cg,KH,KW --b-shape O --x X --w W --bias B --stride SH,SW --padding PH,PW --dilation DH,DW --groups G --out OUT
+~~~
+
+标准 NCHW 卷积，`Cg = C / groups`。
+
+#### 反向传播
+
+~~~bash
+build/nn_task matmul-backward --a-shape M,K --b-shape K,N --a A --b B --grad G --da DA --db DB
+build/nn_task linear-backward --x-shape B,IN --w-shape OUT,IN --b-shape OUT --x X --w W --grad G --dx DX --dw DW --db DB
+build/nn_task relu-backward --shape N --x X --grad G --dx DX
+build/nn_task layernorm-backward --shape B,C --x X --gamma G --grad G --eps 1e-5 --dx DX --dgamma DG
+build/nn_task mse-backward --pred-shape S --target-shape S --pred P --target T --grad G --dp DP --dtarget DT
+build/nn_task conv2d-backward --x-shape N,C,H,W --w-shape O,Cg,KH,KW --b-shape O --x X --w W --grad G --stride SH,SW --padding PH,PW --dilation DH,DW --groups G --dx DX --dw DW --db DB
+~~~
+
+反向传播定义为：上游梯度 `G` 对输入、权重、bias 的梯度；`G` 与 forward 输出同形状。
+
+#### 优化器
+
+~~~bash
+build/nn_task adamw --param P --grad G --m M --v V --lr LR --beta1 B1 --beta2 B2 --eps EPS --weight-decay WD --step T --out-param P2 --out-m M2 --out-v V2
+build/nn_task sgd-momentum --param P --grad G --momentum-buffer MB --lr LR --momentum MU --out-param P2 --out-buffer MB2
+~~~
+
+AdamW 使用 decoupled weight decay：
+
+~~~text
+m_t = beta1*m + (1-beta1)*g
+v_t = beta2*v + (1-beta2)*g*g
+m_hat = m_t / (1-beta1^t)
+v_hat = v_t / (1-beta2^t)
+param = param*(1-lr*wd) - lr*m_hat/(sqrt(v_hat)+eps)
+~~~
+
+SGD momentum：
+
+~~~text
+buffer = momentum*buffer + grad
+param = param - lr*buffer
+~~~
+
+#### 数值评测方式
+
+评测侧在独立进程中生成数据，并用 PyTorch 在相同输入/参数上计算参考值，逐操作比较。工作区不会收到期望输出张量。
+
+- 每个操作使用 3 组独立随机数据（固定种子），形状固定
+- 误差指标为加权平均相对误差：
+
+~~~
+mre = sum(|candidate - reference|) / sum(|reference|)
+~~~
+
+- 每个操作有独立阈值，单位与 fp32 精度匹配：
+
+| 操作 | 加权平均相对误差阈值 |
+| --- | --- |
+| elementwise.add / sub / mul / div | 1e-6 |
+| relu | 1e-6 |
+| mse | 1e-6 |
+| sgd-momentum | 1e-6 |
+| matmul / linear | 1e-5 |
+| softmax / layernorm | 1e-5 |
+| adamw | 1e-5 |
+| conv2d | 1e-4 |
+| matmul-backward / linear-backward / relu-backward / layernorm-backward / mse-backward / conv2d-backward | 1e-4 |
+
+- 任一操作不可执行、崩溃、超时（单次调用 60 秒）、输出文件缺失或元素数不符，或 mre 超过阈值，都会判为基础设施失败（stage = infra）
+- 速度（GFLOP/s）会同时报告，但速度不参与通过判定
+- 不做完整训练，不要求模型保存/加载格式；控制器需要的权重可以放在源码目录或控制器自行打包
+
+评测数据在测试进程内生成，不随工作区提供。不要伪造输出：评测直接执行你的二进制并检查它写出的文件。
 
 ### 2. 控制器入口
 
@@ -222,7 +328,7 @@ eval_test
 
 ### eval_test
 
-由宿主对最新提交快照进行构建和隐藏仿真评估，返回：
+由宿主对最新提交快照进行构建、算子数值评测和隐藏仿真评估，返回：
 
 ~~~text
 stage
@@ -248,8 +354,8 @@ completed
 阶段含义：
 
 - no_submission：还没有提交快照
-- compile：CMake 构建 `libnn.a` / `control` 失败
-- infra：隐藏基础设施测试编译、链接或运行失败
+- compile：CMake 构建失败，或没有产出 build/nn_task / build/control
+- infra：build/nn_task 算子数值评测失败（不可执行、崩溃、超时、输出缺失或误差超阈值）
 - controller：控制器启动、协议、崩溃、超时或输出非法
 - simulation：隐藏仿真推进异常、NaN 或超时
 - scoring：测试有效，但 `t_can < 10.0`
@@ -278,10 +384,9 @@ t_can >= 10.0
 
 - 只允许 C++17 + CMake + C++ 标准库
 - 仅 CPU，fp32
-- 提交源码中不得出现 torch
-- 评测环境无 Python/torch
+- 提交源码中不得出现 torch；候选运行时不提供 Python/torch（评测侧会用 PyTorch 计算数值参考值）
 - 无网络
-- 不得修改仿真器或公开头文件 `include/nn/nn.hpp`
+- 不得修改或替换 tools/sim；它只用于训练和自测
 - 不得提交编译产物
 - 赛后人工审核：控制器必须是神经网络，且必须实际调用你实现的神经网络基础设施；手写控制律、查表、固定轨迹或外部依赖会被判无效
 
@@ -361,9 +466,9 @@ T_done 是第一次返回 completed 的测试请求时间。
 
 ## 建议工作顺序
 
-1. 阅读 `include/nn/nn.hpp` 契约与 tools/sim 协议
-2. 先实现最小可用的 tensor/算子/反向/优化器
-3. 用自测和 `include/nn/nn.hpp` 契约检查基础设施
-4. 用 tools/sim 采集数据并训练控制器
+1. 阅读 build/nn_task 的 CLI 协议与 tools/sim 协议
+2. 先实现最小可用的 tensor/算子/反向/优化器/线程池，并让 build/nn_task 跑通
+3. 用 PyTorch 或独立 double 标量参考、有限差分梯度检查逐算子核对误差，边界形状/广播/groups/stride/dilation 都要覆盖
+4. 用 tools/sim 采集数据并训练控制器，导出权重供 build/control 使用
 5. 反复提交和测试，优先把 t_can 提升到 10 秒
 6. 完成后立即总结

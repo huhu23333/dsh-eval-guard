@@ -9,7 +9,16 @@
 import fs from 'node:fs'
 import path from 'node:path'
 
-/** DSH-first default section. Only names that exist in the registry are surfaced. */
+/**
+ * DSH-first default section. Only names that exist in the registry are surfaced
+ * in prompts; the enforcement set keeps every name so a tool installed later
+ * cannot slip through with an empty user document.
+ *
+ * The last block covers tools that can otherwise escape a one-shot evaluation:
+ * goal rounds and schedules keep working after the wall-clock deadline, and the
+ * drawio/canvas tools write host files directly (bypassing the fs sandbox) and
+ * can cross workspace boundaries.
+ */
 const BASE_BLACKLIST: readonly string[] = [
   'web_search',
   'web_fetch',
@@ -46,6 +55,21 @@ const BASE_BLACKLIST: readonly string[] = [
   'cordis_inspect_query',
   'exit_plan_mode',
   'ask_user_question',
+  // Goal / schedule persistence outlives one turn and one deadline.
+  'create_goal',
+  'get_goal',
+  'update_goal',
+  'schedule_create',
+  'schedule_list',
+  'schedule_update',
+  'schedule_delete',
+  // Host-side file writers that do not go through the fs sandbox.
+  'drawio_edit',
+  'drawio_render',
+  'drawio_template',
+  'drawio_validate',
+  'canvas_state',
+  'view_canvas',
 ]
 
 /** Third-party tools that reach an external service, subagent, or agent channel. */
@@ -63,6 +87,11 @@ const PLUGIN_BLACKLIST_PATTERNS: readonly RegExp[] = [
   /^ssh_/,
   /^e2b_/,
   /^mcp_/,
+  /^drawio_/,
+  /^schedule_/,
+  /^(?:create|get|update)_goal$/,
+  /^canvas_/,
+  /^view_canvas$/,
 ]
 
 /** Parse one blacklist document into ordered tool names (comments removed). */
@@ -108,7 +137,13 @@ export interface PathRule {
   path: string
 }
 
-/** Parse the forbidden-paths document. Invalid lines are ignored. */
+/**
+ * Parse the forbidden-paths document. Invalid lines are ignored.
+ *
+ * A line containing a glob character is treated as the prefix before the first
+ * wildcard, so a line like /home/<anything>/secret means "everything under
+ * /home"; this is deliberately conservative (never narrower than written).
+ */
 export function parsePathRules(text: string): PathRule[] {
   const rules: PathRule[] = []
   for (const raw of text.split(/\r?\n/)) {
@@ -120,8 +155,10 @@ export function parsePathRules(text: string): PathRule[] {
       line = line.slice(1).trim()
     }
     if (!line.startsWith('/')) continue
+    const wildcard = line.search(/[*?]/)
+    if (wildcard >= 0) line = line.slice(0, wildcard)
     if (line.length > 1 && line.endsWith('/')) line = line.slice(0, -1)
-    if (line.includes('*') || line.includes('?')) continue
+    if (line === '') line = '/'
     rules.push({ allow, path: path.normalize(line) })
   }
   return rules
@@ -192,27 +229,44 @@ export function applyRules(real: string, rules: readonly PathRule[], base: boole
 
 /** Decide one absolute path for read or write access. */
 export function checkPath(real: string, workspace: string, write: boolean, rules: readonly PathRule[]): boolean {
-  if (under(real, workspace)) return true
-  if (isNoTraceDevice(real) && !write) return true
-  if (write) return isNoTraceDevice(real)
-  return applyRules(real, rules, baseReadAllowed(real, workspace))
+  const inWorkspace = under(real, workspace)
+  if (!write) {
+    if (inWorkspace) return true
+    if (isNoTraceDevice(real)) return true
+    return applyRules(real, rules, baseReadAllowed(real, workspace))
+  }
+  // Writes stay inside the workspace (or a no-trace device). Ordered rules can
+  // narrow that set, but an allow rule must never widen it beyond the workspace.
+  const base = inWorkspace || isNoTraceDevice(real)
+  if (!base) return false
+  return applyRules(real, rules, base) && base
 }
 
-/** Path-bearing argument keys audited for DSH-built-in and dsh-ops tools. */
+/** Keys whose value is task content, not another path to audit. */
+const CONTENT_KEYS = new Set([
+  'content', 'old_string', 'new_string', 'text', 'code', 'prompt',
+  'description', 'justification', 'new_source', 'file_text',
+])
+
+/** Path-bearing argument keys audited for DSH-built-in and installed tools. */
 const PATH_KEYS = new Set([
   'path', 'file', 'file_path', 'filePath', 'files', 'dir', 'cwd', 'root', 'source',
   'destination', 'dest', 'target', 'input', 'output', 'script_path',
+  'source_path', 'source_paths', 'file_paths', 'paths', 'input_path', 'output_path',
+  'image', 'images', 'out',
 ])
 
 /** Tools whose path arguments are read-only accesses. */
 const READ_TOOLS = new Set([
   'read', 'read_image', 'glob', 'grep', 'present', 'load_workspace_dependencies',
   'ops_inspect_local_file', 'ops_grep', 'ops_glob',
+  'drawio_validate',
 ])
 
 /** Tools whose path arguments are mutations. */
 const WRITE_TOOLS = new Set([
   'write', 'edit', 'str_replace_editor', 'ops_replace',
+  'drawio_edit', 'drawio_render', 'drawio_template',
 ])
 
 /** Tools we deliberately do not inspect: the process sandbox owns their effects. */
@@ -220,6 +274,11 @@ const PROCESS_TOOLS = new Set([
   'bash', 'ops_bash', 'ops_run', 'ops_run_background', 'run_code', 'job_output',
   'job_list', 'job_kill', 'ops_job_output', 'ops_job_list', 'ops_job_kill',
 ])
+
+/** Whether one tool name takes file paths this module knows how to audit. */
+export function isAuditedTool(name: string): boolean {
+  return READ_TOOLS.has(name) || WRITE_TOOLS.has(name)
+}
 
 /** Collect every path-looking string under a known path key. */
 export function collectPathArgs(value: unknown, out: string[] = []): string[] {
@@ -237,7 +296,9 @@ export function collectPathArgs(value: unknown, out: string[] = []): string[] {
             else collectPathArgs(item, out)
           }
         } else collectPathArgs(child, out)
-      } else {
+      } else if (!CONTENT_KEYS.has(key)) {
+        // File contents are data: a JSON body containing a "path" key must not
+        // be mistaken for a second path argument.
         collectPathArgs(child, out)
       }
     }
@@ -262,8 +323,15 @@ export function auditToolCall(
   rules: readonly PathRule[],
 ): AuditDecision {
   if (PROCESS_TOOLS.has(name)) return { allow: true, tool: name, write: false }
-  if (!READ_TOOLS.has(name) && !WRITE_TOOLS.has(name)) return { allow: true, tool: name, write: false }
-  const write = WRITE_TOOLS.has(name)
+  if (!isAuditedTool(name)) return { allow: true, tool: name, write: false }
+  const argsRecord = args !== null && typeof args === 'object' && !Array.isArray(args)
+    ? args as Record<string, unknown>
+    : undefined
+  // str_replace_editor's view command is a read; treating it as a write blocks
+  // inspecting read-only system files outside the workspace.
+  const write = name === 'str_replace_editor' && argsRecord?.['command'] === 'view'
+    ? false
+    : WRITE_TOOLS.has(name)
   const paths = collectPathArgs(args)
   for (const target of paths) {
     const real = resolveCheckPath(target, workspace)
@@ -275,7 +343,7 @@ export function auditToolCall(
         write,
         reason: write
           ? '只允许修改当前工作区；该写入已被阻止。'
-          : '只允许读取当前工作区与系统路径；该读取已被阻止。',
+          : '只允许读取当前工作区与系统只读文件；该读取已被阻止。',
       }
     }
   }

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """Standalone evaluator for the Neural-Pendulum task.
 
-It uses the latest preserved submission under .eval/submissions (falling back to
-the live workspace), builds it from source, runs the public self-test, drives
-the controller against a fixed-initial-state evaluation simulator, and computes
-the task's time-integral score from .eval/events.jsonl.
+It takes the latest host-side submission, builds it once, runs the same
+PyTorch-referenced operator oracle as Neural-FP32 / Neural-CIFAR (every
+operation must be executable and within its error threshold), then drives the
+candidate controller against the fixed-initial-state evaluation simulator and
+computes the task's time-integral score from the host events staged under
+.eval/.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import math
 import os
@@ -20,30 +23,74 @@ import time
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+import ops_eval  # noqa: E402
+
 SIM = HERE / 'sim_eval'
+HOST_EVAL_KEYS = frozenset({
+    'EVAL_RESULT_FILE', 'EVAL_JOB_DIR', 'EVAL_INSTALL_TOKEN',
+    'EVAL_BASELINE_DIR', 'EVAL_VENV_MANIFEST',
+})
+
+
+def child_env() -> dict[str, str]:
+    """Environment for build/simulator/candidate children."""
+    return {
+        key: value for key, value in os.environ.items()
+        if key not in HOST_EVAL_KEYS and key not in {'PYTHONPATH', 'PYTHONHOME'}
+    }
+
 DT = 0.01
 MAX_STEPS = 3000
 T_TGT = 10.0
 UP_TOL = 0.05
+# The score changes at the test request instant. This process is started for
+# one request, so module import is the closest available request timestamp.
+TEST_TIME = time.time()
+# Hard budgets so a pathological submission cannot stall the evaluation job.
+OPS_DEADLINE_SECONDS = 240.0
+CONTROL_DEADLINE_SECONDS = 360.0
 
 
-def read_line(proc: subprocess.Popen, timeout: float) -> str:
-    selector = selectors.DefaultSelector()
-    selector.register(proc.stdout, selectors.EVENT_READ)
-    try:
-        if not selector.select(timeout):
-            raise RuntimeError('timeout')
-        line = proc.stdout.readline()
-        if line == '':
-            raise RuntimeError('process closed')
-        return line.strip()
-    finally:
-        selector.close()
+class LineReader:
+    """Binary line reader with a per-read deadline.
+
+    A selector on the raw fd plus an internal buffer avoids the classic bug of
+    select() missing lines that a text wrapper already buffered.
+    """
+
+    def __init__(self, proc: subprocess.Popen) -> None:
+        assert proc.stdout is not None
+        self._fd = proc.stdout.fileno()
+        self._buffer = b''
+        self._selector = selectors.DefaultSelector()
+        self._selector.register(self._fd, selectors.EVENT_READ)
+
+    def readline(self, timeout: float) -> str:
+        deadline = time.monotonic() + timeout
+        while b'\n' not in self._buffer:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise RuntimeError('timeout')
+            if not self._selector.select(remaining):
+                raise RuntimeError('timeout')
+            chunk = os.read(self._fd, 65536)
+            if not chunk:
+                raise RuntimeError('process closed')
+            self._buffer += chunk
+        line, self._buffer = self._buffer.split(b'\n', 1)
+        return line.decode('utf-8', 'replace').strip()
+
+    def close(self) -> None:
+        try:
+            self._selector.close()
+        except Exception:
+            pass
 
 
 def write_line(proc: subprocess.Popen, obj: dict) -> None:
     assert proc.stdin is not None
-    proc.stdin.write(json.dumps(obj) + '\n')
+    proc.stdin.write((json.dumps(obj) + '\n').encode('utf-8'))
     proc.stdin.flush()
 
 
@@ -87,7 +134,7 @@ def score_for(event: dict) -> float:
 
 
 def final_score(workspace: Path, events: list[dict], now: float | None = None) -> tuple[float, float | None]:
-    """Return (integral, T_done); negative score is penalized over time."""
+    """Return (integral, T_done); a negative score is penalized over time."""
     now = time.time() if now is None else now
     start = task_start(workspace, events)
     tests = [e for e in events if (e.get('event') or e.get('type')) == 'test']
@@ -112,25 +159,6 @@ def final_score(workspace: Path, events: list[dict], now: float | None = None) -
     return total, done_at
 
 
-def archive_submissions(workspace: Path) -> int:
-    root = os.environ.get('EVAL_SUBMISSIONS_ROOT', '')
-    src_root = workspace / '.eval' / 'submissions'
-    if not root or not src_root.is_dir():
-        return 0
-    target = Path(root)
-    target.mkdir(parents=True, exist_ok=True)
-    count = 0
-    for source in src_root.iterdir():
-        if not source.is_dir():
-            continue
-        destination = target / source.name
-        if destination.exists():
-            continue
-        shutil.copytree(source, destination, symlinks=True)
-        count += 1
-    return count
-
-
 def latest_submission(workspace: Path) -> Path | None:
     root = workspace / '.eval' / 'submissions'
     if not root.is_dir():
@@ -141,106 +169,151 @@ def latest_submission(workspace: Path) -> Path | None:
     return max(dirs, key=lambda p: p.stat().st_mtime)
 
 
-def fail(message: str, infra_ok: bool = False, workspace: Path | None = None) -> dict:
-    result = {'infra_ok': infra_ok, 't_can': 0.0, 'success': False, 'error': message}
-    if workspace is not None:
-        events = read_events(workspace)
-        result['final_score'], done = final_score(workspace, events)
-        result['done_at'] = done
-        result['submissions'] = len(list((workspace / '.eval' / 'submissions').glob('*'))) if (workspace / '.eval' / 'submissions').is_dir() else 0
+def submission_count(workspace: Path) -> int:
+    root = workspace / '.eval' / 'submissions'
+    return len(list(root.glob('*'))) if root.is_dir() else 0
+
+
+def emit(result: dict) -> int:
+    target = os.environ.get('EVAL_RESULT_FILE')
+    text = json.dumps(result, ensure_ascii=False, indent=2)
+    if target:
+        Path(target).write_text(text, encoding='utf-8')
+    else:
+        print(text)
+    return 0
+
+
+def final_score_with_current(workspace: Path, events: list[dict], stage: str,
+                             t_can: float, success: bool) -> tuple[float, float | None]:
+    """Score including the test this process is performing at TEST_TIME."""
+    current = {
+        'event': 'test', 'time': TEST_TIME, 'stage': stage,
+        't_can': float(t_can), 'completed': bool(success),
+    }
+    return final_score(workspace, [*events, current])
+
+
+def build_result(stage: str, workspace: Path, events: list[dict], error: str = '',
+                 ops: dict | None = None, source: str = '', t_can: float = 0.0,
+                 success: bool = False) -> dict:
+    integral, done_at = final_score_with_current(workspace, events, stage, t_can, success)
+    result = {
+        'task': 'neural-pendulum',
+        'ok': True,
+        'stage': stage,
+        'infra_ok': False,
+        't_can': float(t_can),
+        'success': bool(success),
+        'error': error,
+        'final_score': integral,
+        'done_at': done_at,
+        'submissions': submission_count(workspace),
+        'source': source,
+    }
+    if ops is not None:
+        result.update({
+            'all_operations_executable': ops.get('all_operations_executable'),
+            'all_operations_passed': ops.get('all_operations_passed'),
+            'max_weighted_mean_relative_error': ops.get('max_weighted_mean_relative_error'),
+            'speed_geomean': ops.get('speed_geomean'),
+            'operations': ops.get('operations', []),
+        })
     return result
 
 
+def fail(message: str, stage: str, workspace: Path, events: list[dict],
+         ops: dict | None = None) -> dict:
+    return build_result(stage, workspace, events, error=message, ops=ops)
+
+
 def main() -> int:
-    import argparse
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description='Neural-Pendulum evaluator')
     parser.add_argument('--workspace', required=True)
     args = parser.parse_args()
-
     workspace = Path(args.workspace).resolve()
     events = read_events(workspace)
     root = Path(tempfile.mkdtemp(prefix='neural-pendulum-eval-'))
-    candidate = root / 'candidate'
-    result = {'infra_ok': False, 't_can': 0.0, 'success': False, 'error': ''}
     sim = None
     control = None
+    sim_reader = None
+    control_reader = None
     try:
-        archived = archive_submissions(workspace)
         selected = latest_submission(workspace)
         if selected is None:
-            return emit(fail('no submission', workspace=workspace))
-        source = selected
-        shutil.copytree(source, candidate, symlinks=True)
-        if not (candidate / 'CMakeLists.txt').is_file():
-            return emit(fail('CMakeLists.txt missing', workspace=workspace))
+            return emit(fail('no submission', 'no_submission', workspace, events))
+        source_name = str(selected.relative_to(workspace))
 
-        env = dict(os.environ)
-        env.pop('PYTHONPATH', None)
-        env.pop('PYTHONHOME', None)
-        build = candidate / 'build'
-        if build.exists():
-            shutil.rmtree(build, ignore_errors=True)
-        cfg = subprocess.run(
-            ['cmake', '-S', '.', '-B', 'build', '-DCMAKE_BUILD_TYPE=Release'],
-            cwd=str(candidate), capture_output=True, text=True, env=env, timeout=180,
-        )
-        if cfg.returncode != 0:
-            return emit(fail('cmake configure failed\n' + (cfg.stdout + cfg.stderr)[-4000:], workspace=workspace))
-        made = subprocess.run(
-            ['cmake', '--build', 'build', '-j4'],
-            cwd=str(candidate), capture_output=True, text=True, env=env, timeout=1800,
-        )
-        if made.returncode != 0:
-            return emit(fail('build failed\n' + (made.stdout + made.stderr)[-4000:], workspace=workspace))
+        try:
+            source = ops_eval.prepare_source(selected, root)
+            build = ops_eval.build_binaries(source)
+        except Exception as exc:
+            return emit(fail(str(exc), 'compile', workspace, events))
 
-        lib = candidate / 'build' / 'libnn.a'
-        if not lib.is_file():
-            return emit(fail('build/libnn.a missing', workspace=workspace))
-        hidden = HERE.parent / 'assets' / 'neural-pendulum' / 'hidden' / 'test_infra.cpp'
-        if not hidden.is_file():
-            return emit(fail('hidden infrastructure test missing', workspace=workspace))
-        infra_exe = root / 'test_infra'
-        compiler = shutil.which('g++')
-        if compiler is None:
-            return emit(fail('g++ missing', workspace=workspace))
-        ic = subprocess.run([compiler, '-std=c++17', '-O3', '-pthread',
-                             '-I', str(candidate / 'include'), str(hidden), str(lib),
-                             '-lm', '-o', str(infra_exe)], cwd=str(root), capture_output=True,
-                            text=True, env=env, timeout=300)
-        if ic.returncode != 0:
-            return emit(fail('hidden infrastructure test compile failed\n' + (ic.stdout + ic.stderr)[-4000:], workspace=workspace))
-        it = subprocess.run([str(infra_exe)], cwd=str(root), capture_output=True,
-                            text=True, env=env, timeout=600)
-        if it.returncode != 0:
-            return emit(fail('hidden infrastructure test failed\n' + (it.stdout + it.stderr)[-4000:], workspace=workspace))
+        ops_binary = build / 'nn_task'
+        control_path = build / 'control'
+        missing = [name for name, path in (('build/nn_task', ops_binary), ('build/control', control_path))
+                   if not path.is_file()]
+        if missing:
+            return emit(fail('build output missing: ' + ', '.join(missing), 'compile', workspace, events))
 
-        control_path = candidate / 'build' / 'control'
-        if not control_path.is_file():
-            return emit(fail('build/control missing', infra_ok=True, workspace=workspace))
+        try:
+            ops = ops_eval.evaluate_ops(ops_binary, root, deadline=time.monotonic() + OPS_DEADLINE_SECONDS)
+        except Exception as exc:
+            return emit(fail('operator evaluation failed: ' + str(exc), 'infra', workspace, events))
+        ops_eval.print_summary(ops)
+        if not ops['all_operations_passed']:
+            return emit(fail(ops_eval.infrastructure_error(ops), 'infra', workspace, events, ops=ops))
 
+        env = child_env()
         sim = subprocess.Popen([str(SIM), '--eval'], stdin=subprocess.PIPE,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                text=True, bufsize=1)
-        control = subprocess.Popen([str(control_path)], cwd=str(candidate),
-                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                    stderr=subprocess.PIPE, text=True, bufsize=1)
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
+        control = subprocess.Popen([str(control_path)], cwd=str(source),
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   stderr=subprocess.DEVNULL, env=env)
+        sim_reader = LineReader(sim)
+        control_reader = LineReader(control)
 
         write_line(sim, {'cmd': 'reset'})
-        obs = json.loads(read_line(sim, 10.0))['obs']
-        write_line(control, {'type': 'reset'})
-        ready = json.loads(read_line(control, 10.0))
-        if ready.get('type') != 'ready':
-            return emit(fail('controller did not reply ready', infra_ok=True, workspace=workspace))
+        try:
+            reply = json.loads(sim_reader.readline(10.0))
+            obs = reply['obs']
+        except Exception as exc:
+            return emit(fail('simulator reset failed: ' + str(exc), 'simulation', workspace, events, ops=ops))
+        try:
+            write_line(control, {'type': 'reset'})
+            ready = json.loads(control_reader.readline(10.0))
+        except Exception as exc:
+            return emit(fail('controller reset failed: ' + str(exc), 'controller', workspace, events, ops=ops))
+        if not isinstance(ready, dict) or ready.get('type') != 'ready':
+            return emit(fail('controller did not reply ready', 'controller', workspace, events, ops=ops))
 
         t_can = 0.0
         up_start = None
         completed = False
         error = ''
+        stage = 'scoring'
+        control_deadline = time.monotonic() + CONTROL_DEADLINE_SECONDS
         for step in range(MAX_STEPS):
+            if time.monotonic() > control_deadline:
+                error = 'control evaluation deadline exceeded'
+                stage = 'simulation'
+                break
             if not isinstance(obs, list) or len(obs) != 3:
                 error = 'simulator returned bad observation'
+                stage = 'simulation'
                 break
-            if max(abs(float(x)) for x in obs) < UP_TOL:
+            try:
+                angles = [float(x) for x in obs]
+            except Exception:
+                error = 'simulator returned non-numeric observation'
+                stage = 'simulation'
+                break
+            if not all(math.isfinite(x) for x in angles):
+                error = 'simulator returned non-finite observation'
+                stage = 'simulation'
+                break
+            if max(abs(x) for x in angles) <= UP_TOL:
                 if up_start is None:
                     up_start = step * DT
                 t_can = max(t_can, step * DT - up_start)
@@ -248,33 +321,51 @@ def main() -> int:
                 up_start = None
             if t_can >= T_TGT:
                 completed = True
+                stage = 'completed'
                 break
 
-            write_line(control, {'type': 'step', 'step': step, 'state': obs})
-            action = json.loads(read_line(control, 0.1))
-            torque = action.get('torque')
+            write_line(control, {'type': 'step', 'step': step, 'state': angles})
+            try:
+                action = json.loads(control_reader.readline(0.1))
+            except Exception as exc:
+                error = 'controller did not reply in time: ' + str(exc)
+                stage = 'controller'
+                break
+            torque = action.get('torque') if isinstance(action, dict) else None
             if (not isinstance(torque, list) or len(torque) != 2
-                    or not all(isinstance(v, (int, float)) and math.isfinite(v) for v in torque)
+                    or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                               and math.isfinite(v) for v in torque)
                     or any(abs(float(v)) > 1.0 for v in torque)):
                 error = 'controller returned invalid torque'
+                stage = 'controller'
                 break
-            write_line(sim, {'cmd': 'step', 'torque': torque})
-            reply = json.loads(read_line(sim, 10.0))
+            write_line(sim, {'cmd': 'step', 'torque': [float(torque[0]), float(torque[1])]})
+            try:
+                reply = json.loads(sim_reader.readline(10.0))
+            except Exception as exc:
+                error = 'simulator did not reply: ' + str(exc)
+                stage = 'simulation'
+                break
+            if not isinstance(reply, dict):
+                error = 'simulator returned bad reply'
+                stage = 'simulation'
+                break
             if 'error' in reply:
+                error = 'simulator error: ' + str(reply['error'])
+                stage = 'simulation'
                 break
-            obs = reply['obs']
+            obs = reply.get('obs')
 
-        integral, done_at = final_score(workspace, events)
-        result = {'infra_ok': True, 't_can': float(t_can),
-                  'success': bool(completed), 'error': error,
-                  'final_score': integral, 'done_at': done_at,
-                  'submissions': len(list((workspace / '.eval' / 'submissions').glob('*'))) if (workspace / '.eval' / 'submissions').is_dir() else 0,
-                  'archived_submissions': archived,
-                  'source': str(selected.relative_to(workspace)) if selected is not None else 'live-workspace'}
+        result = build_result(stage, workspace, events, error=error, ops=ops, source=source_name,
+                               t_can=t_can, success=completed)
+        result['infra_ok'] = True
         return emit(result)
     except Exception as exc:
-        return emit(fail(str(exc), workspace=workspace))
+        return emit(fail(str(exc), 'simulation', workspace, events))
     finally:
+        for reader in (control_reader, sim_reader):
+            if reader is not None:
+                reader.close()
         for proc in (control, sim):
             if proc is not None:
                 try:
@@ -286,16 +377,6 @@ def main() -> int:
                     except Exception:
                         pass
         shutil.rmtree(root, ignore_errors=True)
-
-
-def emit(result: dict) -> int:
-    target = os.environ.get('EVAL_RESULT_FILE')
-    text = json.dumps(result, ensure_ascii=False, indent=2)
-    if target:
-        Path(target).write_text(text, encoding='utf-8')
-    else:
-        print(text)
-    return 0
 
 
 if __name__ == '__main__':

@@ -107,13 +107,16 @@ def main() -> int:
     cmd = [sys.executable, "-X", "utf8", str(task / "tournament" / "run.py"), "--output", str(run_dir),
            "--bots", *bots, "--sizes", *sizes, "--seeds", str(seeds), "--workers", str(max(1, args.workers))]
     print("tier=%s sizes=%s seeds=%d bots=%d" % (args.tier, sizes, seeds, len(bots)), flush=True)
-    completed = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    completed = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=3600)
     if completed.returncode != 0:
         print(completed.stdout[-4000:], completed.stderr[-4000:], file=sys.stderr)
         return 2
     ratings_doc = load_json(run_dir / "bt.json") or {}
+    if ratings_doc.get("unavailable"):
+        print("bomberman rating unavailable: " + str(ratings_doc.get("unavailable")), file=sys.stderr)
+        return 2
     ratings = ratings_doc.get("ratings", {})
-    prices = load_json(ROOT / "prices.json") or {}
+    prices = load_json(ROOT / "bomberman-prices.json") or load_json(ROOT / "prices.json") or {}
 
     rows = []
     for name, program in programs.items():

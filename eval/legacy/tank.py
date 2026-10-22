@@ -258,8 +258,8 @@ def main() -> int:
     if not directories:
         print("no submissions found under " + str(submissions_root), file=sys.stderr)
         return 2
-    prices_path = ROOT / "prices.json"
-    prices = load_json(prices_path) or {}
+    prices_path = ROOT / "tank-prices.json"
+    prices = load_json(prices_path) or load_json(ROOT / "prices.json") or {}
 
     participants: list[Participant] = [Participant("baseline", workspace / "baseline.cpp", "baseline")]
     participants += [load_submission(directory) for directory in directories]

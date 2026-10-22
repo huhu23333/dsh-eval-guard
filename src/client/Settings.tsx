@@ -195,18 +195,28 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
 
   const selectTask = (next: string): void => {
     setTaskId(next)
-    void save({ taskId: next })
     try { localStorage.setItem('evalGuard.taskId', next) } catch { /* storage is optional */ }
     setCheck(null); setManual(null); setPrompt(''); setJob(null); setJobNotice('')
     if (workspaceId !== '') loadManual(workspaceId, next)
     const task = state?.tasks.find(item => item.id === next)
-    if (task === undefined) return
+    if (task === undefined) {
+      void save({ taskId: next })
+      return
+    }
     const remotes = task.remotes ?? []
     const cloneSource = draft.cloneSource === 'custom' || remotes.some(remote => remote.id === draft.cloneSource)
       ? draft.cloneSource : (remotes[0]?.id ?? 'github')
-    setDraft(current => ({ ...current, timeLimitMinutes: task.timeLimitMinutes, timeLimitEnabled: task.timeLimitEnabled, cloneSource }))
+    const patch: Partial<Draft> = {
+      taskId: next,
+      timeLimitMinutes: task.timeLimitMinutes,
+      timeLimitEnabled: task.timeLimitEnabled,
+      cloneSource,
+    }
+    // All task defaults travel in one atomic mutation. Two concurrent mutate()
+    // calls with the same revision lose the second half to the CAS guard.
+    setDraft(current => ({ ...current, ...patch }))
     setNotice(t('settings.taskDefaults').replace('{minutes}', String(task.timeLimitMinutes)).replace('{state}', task.timeLimitEnabled ? t('settings.on') : t('settings.off')))
-    void save({ timeLimitMinutes: task.timeLimitMinutes, timeLimitEnabled: task.timeLimitEnabled, cloneSource })
+    void save(patch)
   }
 
   const toggleEnabled = (next: boolean): void => {
@@ -303,6 +313,8 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
         <label><input type="checkbox" checked={draft.enabled} disabled={!ready} onChange={event => toggleEnabled(event.target.checked)} /> {t('settings.enabled')}</label>
       </div>
       <p style={note}>{t('settings.enabledHint')}</p>
+      {state?.error !== undefined && <p style={{ ...note, color: '#d99' }}>{t('settings.enableError')}: {state.error}</p>}
+      {draft.enabled && state !== null && !state.enabled && <p style={{ ...note, color: '#d99' }}>{t('settings.enableInactive')}</p>}
     </section>
 
     <section style={box}>

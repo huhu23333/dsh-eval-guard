@@ -47,6 +47,11 @@ function under(target: string, root: string): boolean {
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
 }
 
+/** Resolve symlinks where possible; keep the lexical path when it does not exist. */
+function realOrSelf(target: string): string {
+  try { return fs.realpathSync.native(target) } catch { return path.resolve(target) }
+}
+
 /**
  * Register every route this plugin owns.
  * @param ctx - host context.
@@ -69,6 +74,7 @@ export function registerRoutes(ctx: Context, guard: Guard, tasks: TaskService): 
       fetch: async (): Promise<Response> => {
         const state: GuardState = {
           enabled: guard.active,
+          ...guard.lastFailure === undefined ? {} : { error: guard.lastFailure },
           running: guard.runningSessions(),
           tasks: [...TASKS],
           defaultBlacklist: guard.defaultBlacklist(),
@@ -181,14 +187,20 @@ export function registerRoutes(ctx: Context, guard: Guard, tasks: TaskService): 
         try { body = await request.json() as typeof body } catch { return json({ error: 'invalid body' }, 400) }
         const target = typeof body.path === 'string' ? path.resolve(body.path) : ''
         if (target === '') return json({ error: 'path is required' }, 400)
-        const material = path.resolve(guardRoot(), 'material')
-        const workspaces = (child.get('workspaceRegistry') as { list?: () => WorkspaceLike[] } | undefined)?.list?.() ?? []
-        const allowed = under(target, material) || workspaces.some(workspace => under(target, workspace.path))
-        if (!allowed) return json({ error: 'path is not revealable' }, 403)
         if (!fs.existsSync(target)) return json({ error: 'path does not exist' }, 404)
+        // Validate the REAL path so a symlink inside a workspace cannot make the
+        // host open an unrelated location.
+        const real = realOrSelf(target)
+        const material = realOrSelf(path.join(guardRoot(), 'material'))
+        const workspaces = (child.get('workspaceRegistry') as { list?: () => WorkspaceLike[] } | undefined)?.list?.() ?? []
+        const allowed = under(real, material) || workspaces.some(workspace => under(real, realOrSelf(workspace.path)))
+        if (!allowed) return json({ error: 'path is not revealable' }, 403)
         try {
-          const childProcess = spawn('xdg-open', [target], { detached: true, stdio: 'ignore' })
-          childProcess.unref()
+          await new Promise<void>((resolve, reject) => {
+            const childProcess = spawn('xdg-open', [real], { detached: true, stdio: 'ignore' })
+            childProcess.once('spawn', () => { childProcess.unref(); resolve() })
+            childProcess.once('error', (error: Error) => { reject(error) })
+          })
         } catch (error: unknown) {
           return json({ error: error instanceof Error ? error.message : String(error) }, 500)
         }

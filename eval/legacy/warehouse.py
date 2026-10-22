@@ -2,9 +2,9 @@
 """Independent evaluation for dsh-eval-guard warehouse submissions.
 
 Reads submissions/<name>/{src/*.cpp,run/,cost.json}, compiles with the fixed
-g++ flags, compares every public workload byte-for-byte with the expected
-output, measures CPU time against the baseline, and writes a leaderboard plus
-cost/violation/static-scan reports.
+g++ flags, compares every public workload byte-for-byte (CRLF normalized) with
+the expected output, measures CPU time against the baseline, and writes a
+leaderboard plus cost/violation/static-scan reports.
 
 The evaluator is independent of the DSH plugin: copy the run/ directory from
 $DSH_HOME/eval-guard/runs/<run-id>/ next to src/.
@@ -220,7 +220,7 @@ def main() -> int:
     out_dir = Path(args.out).resolve() if args.out else ROOT / "results" / time.strftime("%Y%m%d-%H%M%S")
     out_dir.mkdir(parents=True, exist_ok=True)
     build_dir = out_dir / "build"
-    prices = load_json(ROOT / "prices.json") or {}
+    prices = load_json(ROOT / "warehouse-prices.json") or load_json(ROOT / "prices.json") or {}
 
     print("tier=%s workloads=%s repeats=%d" % (args.tier, ",".join(names), repeats))
     baseline = Participant("baseline", baseline_src, "baseline")

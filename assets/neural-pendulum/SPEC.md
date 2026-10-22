@@ -1,7 +1,11 @@
-# Neural-Pendulum 任务规格 v1.3
+# Neural-Pendulum 任务规格 v1.4
 
 本文件是已确定的任务内部规格。实现、评测器、workspace 素材以此为准。
 后续除非明确修改规格，否则不再重新讨论这些规则。
+
+v1.4 变更：后端基础设施评测与 Neural-FP32 / Neural-CIFAR 统一为“固定 CLI +
+PyTorch 参考值 + 加权平均相对误差阈值”，不再使用 include/nn/nn.hpp 头文件契约和
+隐藏 C++ 基础设施测试。
 
 ## 1. 任务标识
 
@@ -15,11 +19,11 @@
 
 agent 必须：
 
-1. 从零实现一套神经网络基础设施（张量、算子、反向传播、优化器、模型序列化、线程池）。
+1. 从零实现一套神经网络基础设施（张量、算子、反向传播、优化器、线程池；控制器权重的打包方式自定，评测不要求特定序列化格式）。
 2. 使用该基础设施训练一个神经网络控制器。
 3. 控制预编译双驱动三节摆：第一、第三关节施加有限力矩，中间关节被动，从全向下起摆，并保持三根杆全部向上至少 t_tgt = 10.0 s。
-4. 保证基础设施实现 `include/nn/nn.hpp` 契约并通过隐藏测试。
-5. 提交的源码中不得出现 torch，测试环境不提供 Python/torch。
+4. 保证基础设施通过 `build/nn_task` 固定 CLI 的数值评测：评测侧用 PyTorch 在相同数据上计算参考值，逐操作比较加权平均相对误差并对照阈值。
+5. 提交的源码中不得出现 torch；候选运行时不提供 Python/torch。
 
 允许在开发阶段使用 PyTorch 做数值自查和参考，但提交源码必须完全独立。
 
@@ -179,39 +183,43 @@ cmake --build build -j4
 必须产生：
 
 ~~~
-build/libnn.a
+build/nn_task
 build/control
 ~~~
 
-### 8.1 基础设施测试入口
+### 8.1 基础设施数值评测入口
 
-基础设施实现位于 `src/nn/*.cpp`，由 CMake 构建静态库 `build/libnn.a`；公开头文件 `include/nn/nn.hpp` 为不可修改的 API 契约。
+神经网络基础设施通过 `build/nn_task` 固定 CLI 暴露（协议见 TASK.md）。评测侧在独立评测进程中：
 
-评测侧独立编译隐藏测试并链接 `build/libnn.a`。
+1. 用固定种子生成输入与参数
+2. 用 PyTorch 在相同数据上计算参考输出
+3. 调用候选 `build/nn_task` 子命令，读取其写出的 float32 结果
+4. 逐操作计算加权平均相对误差
 
-隐藏测试覆盖：
+~~~
+mre = sum(|candidate - reference|) / sum(|reference|)
+~~~
 
-- fp32 tensor、形状与广播
-- elementwise add/sub/mul/div
-- matmul / linear
-- relu / softmax
-- layernorm
-- conv2d（stride/padding/dilation/groups）
-- MSE
-- matmul/linear/relu/layernorm/conv2d/MSE 反向
-- SGD momentum
-- AdamW
-- 模型保存/加载
-- 线程池
+覆盖操作与阈值：
 
-任一测试失败：
+| 操作 | 阈值 |
+| --- | --- |
+| elementwise add/sub/mul/div、relu、mse、sgd-momentum | 1e-6 |
+| matmul、linear、softmax、layernorm、adamw | 1e-5 |
+| conv2d、matmul/linear/relu/layernorm/mse/conv2d backward | 1e-4 |
+
+每个操作使用 3 组独立数据。以下任一情况：
 
 ~~~
 stage = infra
 score = -1
 ~~~
 
-占位符返回空结果按错误处理。
+- 子命令不可执行、崩溃或超时（单次调用 60 秒）
+- 输出文件缺失或元素数不符
+- 加权平均相对误差超过阈值
+
+速度（GFLOP/s）同时统计并报告，但不参与通过判定。参考数据、阈值和评测过程均不在工作区中。
 
 ### 8.2 控制器入口
 
@@ -266,7 +274,7 @@ capped_t_can = min(t_can, t_tgt)
 完成条件：
 
 ~~~
-infra_ok == true
+infra_ok == true（全部算子可执行且误差不超阈值）
 且 t_can >= t_tgt
 ~~~
 
@@ -302,8 +310,8 @@ infra_ok == true
 
 ~~~
 no_submission   没有提交快照
-compile         CMake 构建 libnn.a / control 失败
-infra           隐藏基础设施测试编译、链接或运行失败
+compile         CMake 构建失败，或未产出 build/nn_task / build/control
+infra           build/nn_task 算子数值评测失败（不可执行/崩溃/超时/输出缺失/误差超阈值）
 controller      控制器启动/协议/崩溃/超时/非法输出
 simulation      仿真异常/NaN/仿真超时
 scoring         正常测试但 t_can < t_tgt
@@ -400,7 +408,7 @@ infra_ok = true
 - 无提交
 - 源码缺失
 - 编译失败/超时
-- 基础设施测试失败
+- 算子数值评测失败
 - 控制器加载/接口/崩溃/超时/非法输出
 - 仿真 NaN/异常/超时
 - 测试请求本身失败
@@ -439,11 +447,10 @@ cmake --build build -j4
 
 规则：
 
-- 仅允许 C++17 + CMake + C++ 标准库
-- 无网络
-- 无 torch
-- 无 Python 运行时
-- 源码中出现 torch/Python 依赖：测试失败或赛后人工审核无效
+- 候选仅允许 C++17 + CMake + C++ 标准库
+- 候选无网络；评测侧不向候选提供 Python/torch
+- 候选源码中出现 torch/Python 依赖：算子评测失败或赛后人工审核无效
+- 评测侧使用 PyTorch（CPU、确定性、单线程）计算数值参考值
 - 编译失败：stage = compile，score = -1
 
 ## 16. 赛后人工审核

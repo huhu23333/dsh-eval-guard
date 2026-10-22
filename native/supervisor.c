@@ -57,6 +57,17 @@
 #ifndef SYS_open_by_handle_at
 #define SYS_open_by_handle_at 304
 #endif
+#ifndef SYS_fchmodat2
+#define SYS_fchmodat2 452
+#endif
+
+#if defined(__x86_64__)
+#define SUPERVISOR_AUDIT_ARCH AUDIT_ARCH_X86_64
+#elif defined(__aarch64__)
+#define SUPERVISOR_AUDIT_ARCH AUDIT_ARCH_AARCH64
+#else
+#error "dsh-eval-supervisor: unsupported architecture"
+#endif
 
 #define MAX_RULES 512
 #define MAX_PATH 4096
@@ -77,13 +88,31 @@ static Rule g_rules[MAX_RULES];
 static int g_rule_count;
 static int g_audit_fd = -1;
 static volatile sig_atomic_t g_stop;
+/* The sandbox mounted a private tmpfs at /tmp (workspace under host /tmp). */
+static int g_tmpfs_tmp;
+static char g_requested_cwd[MAX_PATH];
 /* bwrap itself needs AF_UNIX and AF_NETLINK sockets during setup. The target
  * command is allowed no sockets at all once bwrap has exec'd it. */
 static int g_command_started;
 static pid_t g_current_pid;
 static int g_tmpbind;
 
-/** Whether the notifying process is bubblewrap itself (setup phase). */
+/**
+ * Whether the notifying process is bubblewrap itself (setup phase).
+ *
+ * The bwrap command may be a package-manager shim that re-execs several times,
+ * so identification is by executable name (as upstream did). The setup-only
+ * exemptions it enables are restricted to paths that do not exist after
+ * pivot_root, and the command-started gate closes them for the target.
+ */
+static int is_bwrap_name(const char *name) {
+  if (name == NULL || name[0] == '\0') return 0;
+  /* Debian/Fedora ship /usr/bin/bwrap; the project/package is also commonly
+   * called bubblewrap. Accept both spellings so bwrap's own setup writes
+   * (uid_map/gid_map under /proc) are recognized regardless of binary name. */
+  return strstr(name, "bwrap") != NULL || strstr(name, "bubblewrap") != NULL;
+}
+
 static int is_bwrap(pid_t pid) {
   char proc[64];
   char exe[MAX_PATH];
@@ -93,7 +122,7 @@ static int is_bwrap(pid_t pid) {
   exe[n] = '\0';
   const char *base = strrchr(exe, '/');
   base = base == NULL ? exe : base + 1;
-  return strstr(base, "bwrap") != NULL;
+  return is_bwrap_name(base);
 }
 
 static void on_signal(int sig) {
@@ -302,6 +331,9 @@ static int rules_override_read(const char *path, int initial) {
 
 static int path_allowed(const char *path, int write_access) {
   if (g_workspace[0] != '\0' && starts_with_seg(path, g_workspace)) return 1;
+  /* A private tmpfs at /tmp is ephemeral by construction: it never exposes
+   * host files, so both read and write are safe. */
+  if (g_tmpfs_tmp && starts_with_seg(path, "/tmp")) return 1;
   /* bubblewrap builds its new root under /tmp and /newroot before pivot_root.
    * Those transient paths exist only during setup and are removed on exit. */
   if ((!g_command_started || (g_current_pid > 0 && is_bwrap(g_current_pid))) &&
@@ -393,6 +425,17 @@ __attribute__((unused)) static int should_notify(long nr) {
     case SYS_faccessat2:
     case SYS_readlink:
     case SYS_readlinkat:
+    case SYS_symlink:
+    case SYS_symlinkat:
+    case SYS_link:
+    case SYS_linkat:
+    case SYS_mknod:
+    case SYS_mknodat:
+    case SYS_utimensat:
+    case SYS_statx:
+#ifdef SYS_fchmodat2
+    case SYS_fchmodat2:
+#endif
     case SYS_socket:
     case SYS_connect:
     case SYS_bind:
@@ -460,6 +503,17 @@ static const char *syscall_name(long nr) {
     case SYS_faccessat2: return "faccessat2";
     case SYS_readlink: return "readlink";
     case SYS_readlinkat: return "readlinkat";
+    case SYS_symlink: return "symlink";
+    case SYS_symlinkat: return "symlinkat";
+    case SYS_link: return "link";
+    case SYS_linkat: return "linkat";
+    case SYS_mknod: return "mknod";
+    case SYS_mknodat: return "mknodat";
+    case SYS_utimensat: return "utimensat";
+    case SYS_statx: return "statx";
+#ifdef SYS_fchmodat2
+    case SYS_fchmodat2: return "fchmodat2";
+#endif
     case SYS_socket: return "socket";
     case SYS_connect: return "connect";
     case SYS_bind: return "bind";
@@ -507,7 +561,7 @@ static int check_notification(pid_t pid, const struct seccomp_notif *req, int *w
     (void)read_remote_string(pid, nr == SYS_execve ? a0 : a1, executable, sizeof(executable));
     const char *base = strrchr(executable, '/');
     base = base == NULL ? executable : base + 1;
-    if (strstr(base, "bwrap") == NULL) g_command_started = 1;
+    if (!is_bwrap_name(base)) g_command_started = 1;
     *write_access = 0;
     snprintf(path_out, MAX_PATH, "<exec>");
     return 1;
@@ -530,20 +584,10 @@ static int check_notification(pid_t pid, const struct seccomp_notif *req, int *w
     return 1;
   }
   if (nr == SYS_io_uring_setup || nr == SYS_ptrace || nr == SYS_open_by_handle_at) {
+    /* io_uring worker threads bypass a process's seccomp filter, so it can never
+     * be allowed inside the sandbox (libuv stays on epoll via UV_USE_IO_URING=0). */
     *write_access = 0;
     snprintf(path_out, MAX_PATH, "<forbidden:%s>", syscall_name(nr));
-    if (nr == SYS_io_uring_setup) {
-      char proc[64];
-      char exe[MAX_PATH];
-      snprintf(proc, sizeof(proc), "/proc/%d/exe", (int)pid);
-      ssize_t exe_n = readlink(proc, exe, sizeof(exe) - 1);
-      if (exe_n > 0) {
-        exe[exe_n] = '\0';
-        const char *base = strrchr(exe, '/');
-        base = base == NULL ? exe : base + 1;
-        if (strncmp(base, "node", 4) == 0) return 1;
-      }
-    }
     return 0;
   }
 
@@ -606,15 +650,59 @@ static int check_notification(pid_t pid, const struct seccomp_notif *req, int *w
     case SYS_readlinkat:
     case SYS_fchmodat:
     case SYS_fchownat:
+    case SYS_fchmodat2:
       dirfd = (int)a0;
       path_ptr = a1;
-      write = (nr == SYS_unlinkat || nr == SYS_mkdirat || nr == SYS_fchmodat || nr == SYS_fchownat);
+      write = (nr == SYS_unlinkat || nr == SYS_mkdirat || nr == SYS_fchmodat || nr == SYS_fchownat || nr == SYS_fchmodat2);
+      break;
+    case SYS_symlink:
+      path_ptr = a1;
+      write = 1;
+      break;
+    case SYS_symlinkat:
+      dirfd = (int)a1;
+      path_ptr = a2;
+      write = 1;
+      break;
+    case SYS_link:
+      path_ptr = a0;
+      write = 0;
+      break;
+    case SYS_linkat:
+      dirfd = (int)a0;
+      path_ptr = a1;
+      write = 0;
+      break;
+    case SYS_mknod:
+      path_ptr = a0;
+      write = 1;
+      break;
+    case SYS_mknodat:
+      dirfd = (int)a0;
+      path_ptr = a1;
+      write = 1;
+      break;
+    case SYS_utimensat:
+      dirfd = (int)a0;
+      path_ptr = a1;
+      write = 1;
+      break;
+    case SYS_statx:
+      dirfd = (int)a0;
+      path_ptr = a1;
+      write = 0;
       break;
     default:
       *write_access = 0;
       return 1;
   }
 
+  if (path_ptr == 0) {
+    /* fd-only form (for example utimensat with AT_EMPTY_PATH): no new path is touched. */
+    snprintf(path_out, MAX_PATH, "<fd>");
+    *write_access = write;
+    return 1;
+  }
   if (read_remote_string(pid, path_ptr, raw, sizeof(raw)) != 0) {
     snprintf(path_out, MAX_PATH, "<unreadable>");
     *write_access = write;
@@ -641,13 +729,38 @@ static int check_notification(pid_t pid, const struct seccomp_notif *req, int *w
   }
   snprintf(path_out, MAX_PATH, "%s", path);
   *write_access = write;
+  /* renames and hard links also name a second, mutated path; it must pass the
+   * same write policy even though only the first name was resolved above. */
+  if (nr == SYS_rename || nr == SYS_renameat || nr == SYS_renameat2 || nr == SYS_link || nr == SYS_linkat) {
+    unsigned long second_ptr;
+    int second_dirfd = AT_FDCWD;
+    if (nr == SYS_rename || nr == SYS_link) {
+      second_ptr = a1;
+    } else {
+      second_dirfd = (int)a2;
+      second_ptr = a3;
+    }
+    char raw2[MAX_PATH];
+    char path2[MAX_PATH];
+    int existed2 = 0;
+    raw2[0] = '\0';
+    if (read_remote_string(pid, second_ptr, raw2, sizeof(raw2)) == 0 && raw2[0] != '\0') {
+      if (resolve_path(pid, second_dirfd, raw2, &existed2, path2, sizeof(path2)) != 0
+          || !path_allowed(path2, 1)) {
+        snprintf(path_out, MAX_PATH, "%s", path2);
+        *write_access = 1;
+        return 0;
+      }
+    }
+  }
   /* `mkdir -p` walks every existing ancestor and calls mkdir on each one.
    * Creating an already-existing workspace ancestor is a kernel no-op, not an
    * out-of-workspace write. */
   if (write && existed && (nr == SYS_mkdir || nr == SYS_mkdirat) && is_exact_policy_path(path)) return 1;
   /* bwrap writes the user-namespace uid/gid maps under /proc before it execs
    * the target. Nothing the target runs may write under /proc. */
-  if (write && g_current_pid > 0 && is_bwrap(g_current_pid) && starts_with_seg(path, "/proc")) return 1;
+  if (write && starts_with_seg(path, "/proc") &&
+      (!g_command_started || (g_current_pid > 0 && is_bwrap(g_current_pid)))) return 1;
   return path_allowed(path, write) ? 1 : 0;
 }
 
@@ -704,6 +817,14 @@ static void reply_loop(int fd) {
         char syscall_buf[64];
         snprintf(syscall_buf, sizeof(syscall_buf), "%s", syscall_name((long)req.data.nr));
         audit_record((pid_t)req.pid, syscall_buf, path, write_access);
+        /* io_uring is a soft denial: libuv probes it despite UV_USE_IO_URING=0
+         * and must receive EPERM and fall back to epoll instead of taking the
+         * whole command group down. No io_uring instance can exist, so the
+         * path-check bypass this syscall would otherwise enable stays closed. */
+        if ((long)req.data.nr == SYS_io_uring_setup) {
+          respond(fd, &req, 0);
+          continue;
+        }
         char debug_exe[512]; char debug_proc[64];
         snprintf(debug_proc, sizeof(debug_proc), "/proc/%d/exe", (int)req.pid);
         ssize_t debug_n = readlink(debug_proc, debug_exe, sizeof(debug_exe) - 1);
@@ -747,6 +868,8 @@ static void parse_policy(const char *file) {
       if (g_dev_count < MAX_RULES) snprintf(g_dev[g_dev_count++], MAX_PATH, "%s", value);
     } else if (strcmp(kind, "tmpbind") == 0) {
       if (strcmp(value, g_workspace) != 0) g_tmpbind = 1;
+    } else if (strcmp(kind, "tmpfs") == 0) {
+      if (strcmp(value, "/tmp") == 0) g_tmpfs_tmp = 1;
     } else if (strcmp(kind, "rule") == 0) {
       char *sub = value;
       char *arg = strchr(sub, ' ');
@@ -772,6 +895,10 @@ int main(int argc, char **argv) {
     if (strcmp(argv[i], "--") == 0) { i++; break; }
     if (strcmp(argv[i], "--policy") == 0 && i + 1 < argc) { policy = argv[++i]; continue; }
     if (strcmp(argv[i], "--audit") == 0 && i + 1 < argc) { audit = argv[++i]; continue; }
+    if (strcmp(argv[i], "--cwd") == 0 && i + 1 < argc) {
+      snprintf(g_requested_cwd, sizeof(g_requested_cwd), "%s", argv[++i]);
+      continue;
+    }
     if (strcmp(argv[i], "--label") == 0 && i + 1 < argc) { i++; continue; }
     fprintf(stderr, "dsh-eval-supervisor: unknown argument %s\n", argv[i]);
     return 125;
@@ -825,7 +952,7 @@ int main(int argc, char **argv) {
 
     /* arch gate */
     filter[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch));
-    filter[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0);
+    filter[n++] = (struct sock_filter)BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, SUPERVISOR_AUDIT_ARCH, 1, 0);
     filter[n++] = (struct sock_filter)BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS);
     filter[n++] = (struct sock_filter)BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr));
     /* One comparison per intercepted syscall; long but far below the 4096 limit. */
@@ -861,6 +988,17 @@ int main(int argc, char **argv) {
     ADD_SYSCALL(SYS_faccessat2);
     ADD_SYSCALL(SYS_readlink);
     ADD_SYSCALL(SYS_readlinkat);
+    ADD_SYSCALL(SYS_symlink);
+    ADD_SYSCALL(SYS_symlinkat);
+    ADD_SYSCALL(SYS_link);
+    ADD_SYSCALL(SYS_linkat);
+    ADD_SYSCALL(SYS_mknod);
+    ADD_SYSCALL(SYS_mknodat);
+    ADD_SYSCALL(SYS_utimensat);
+    ADD_SYSCALL(SYS_statx);
+#ifdef SYS_fchmodat2
+    ADD_SYSCALL(SYS_fchmodat2);
+#endif
     ADD_SYSCALL(SYS_socket);
     ADD_SYSCALL(SYS_connect);
     ADD_SYSCALL(SYS_bind);
@@ -908,19 +1046,45 @@ int main(int argc, char **argv) {
     /* bwrap pivots into a fresh root and would leave the target at /. Preserve
      * the cwd the consumer chose (the tool's workdir) with bwrap --chdir. */
     {
-      char cwd[MAX_PATH];
+      char inherited[MAX_PATH];
       const char *use_cwd = g_workspace;
-      if (getcwd(cwd, sizeof(cwd)) != NULL && starts_with_seg(cwd, g_workspace)) use_cwd = cwd;
-      int sep = -1;
-      for (int k = i + 1; k < argc; k++) if (strcmp(argv[k], "--") == 0) sep = k;
-      if (sep < 0) sep = argc;
-      char **next = (char **)calloc((size_t)(argc + 3), sizeof(char *));
+      if (g_requested_cwd[0] != '\0' && starts_with_seg(g_requested_cwd, g_workspace)) use_cwd = g_requested_cwd;
+      else if (getcwd(inherited, sizeof(inherited)) != NULL && starts_with_seg(inherited, g_workspace)) use_cwd = inherited;
+      char **next = (char **)calloc((size_t)(argc + 16), sizeof(char *));
       if (next == NULL) _exit(125);
       int out = 0;
-      for (int k = i; k < sep; k++) next[out++] = argv[k];
+      next[out++] = argv[i];              /* bwrap */
       next[out++] = (char *)"--chdir";
       next[out++] = (char *)use_cwd;
-      for (int k = sep; k < argc; k++) next[out++] = argv[k];
+      int env_restored = 0;
+      for (int k = i + 1; k < argc; k++) {
+        next[out++] = argv[k];
+        /* The plugin clears the inherited environment with --clearenv. Re-add
+         * the private launch markers the subprocess provider passed to THIS
+         * process (never to arbitrary children) so run_code's control pipe and
+         * packaged-PTC heap flag survive bwrap. */
+        if (!env_restored && strcmp(argv[k], "--clearenv") == 0) {
+          env_restored = 1;
+          const char *control = getenv("DSH_SUBPROCESS_CONTROL");
+          if (control != NULL && strcmp(control, "pipe") == 0) {
+            next[out++] = (char *)"--setenv";
+            next[out++] = (char *)"DSH_SUBPROCESS_CONTROL";
+            next[out++] = (char *)"pipe";
+          }
+          const char *ptc = getenv("DSH_PTC_RUNTIME_NODE");
+          if (ptc != NULL && ptc[0] != '\0') {
+            next[out++] = (char *)"--setenv";
+            next[out++] = (char *)"DSH_PTC_RUNTIME_NODE";
+            next[out++] = (char *)ptc;
+            const char *node_options = getenv("NODE_OPTIONS");
+            if (node_options != NULL && node_options[0] != '\0') {
+              next[out++] = (char *)"--setenv";
+              next[out++] = (char *)"NODE_OPTIONS";
+              next[out++] = (char *)node_options;
+            }
+          }
+        }
+      }
       next[out] = NULL;
       execvp(next[0], next);
     }

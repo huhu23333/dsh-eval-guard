@@ -133,6 +133,8 @@ export interface GuardEvent {
 /** Host answer for the enable pre-check. */
 export interface GuardState {
   enabled: boolean
+  /** Why the last enable attempt was refused (for example missing bwrap). */
+  error?: string
   running: RunningSession[]
   tasks: TaskInfo[]
   defaultBlacklist: string

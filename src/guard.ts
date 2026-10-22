@@ -11,9 +11,10 @@ import {
 } from './shared.ts'
 import { type Config, resolveConfig } from './config.ts'
 import {
-  auditToolCall, generateDefaultBlacklist, isBaseBlacklistName, parseBlacklist, parsePathRules, WAIT_TOOLS, type PathRule,
+  auditToolCall, generateDefaultBlacklist, isAuditedTool, isBaseBlacklistName, parseBlacklist,
+  parsePathRules, WAIT_TOOLS, type PathRule,
 } from './policy.ts'
-import { dshHome, guardRoot, supervisorPath, wrapSandbox } from './sandbox.ts'
+import { dshHome, guardRoot, probeConfinement, runtimeFiles, supervisorPath, wrapSandbox } from './sandbox.ts'
 
 /** Minimal Agent shape this plugin consumes. */
 interface AgentLike {
@@ -24,12 +25,27 @@ interface AgentLike {
   cancel(cause: { kind: 'hook'; reason: string }, options?: { keepInbox?: boolean }): void
 }
 
+/**
+ * The durable session header fields this plugin uses. DSH keeps them at the
+ * TOP LEVEL of `session.header` (cwd/parentSession/origin/delegationDepth);
+ * there is no `header.meta` wrapper.
+ */
+interface SessionHeaderLike {
+  cwd?: string
+  origin?: 'subagent'
+  parentSession?: string
+  delegationDepth?: number
+  /** Optional display title supplied by newer callers; not part of DSH's header. */
+  title?: string
+}
+
 /** Minimal Session shape this plugin consumes. */
 interface SessionLike {
   id: string
-  header?: { meta?: { cwd?: string; origin?: string; parentSession?: string; delegationDepth?: number; title?: string } }
-  append?(type: string, data: unknown): void
+  header?: SessionHeaderLike
 }
+
+interface JobViewLike { id: string; status: string; owner?: string }
 
 interface Services {
   sessions: { get(id: string): SessionLike | undefined; list(): SessionLike[] }
@@ -45,12 +61,50 @@ interface Services {
     setPolicy(agent: AgentLike, policy: 'ask' | 'never'): void
   }
   jobs?: {
-    list(caller?: string): { id: string; status: string; owner?: string }[]
+    list(caller?: string): JobViewLike[]
     kill(id: string, caller?: string, reason?: string): string
   }
   workspaceRegistry?: { get(id: string): { path: string; title?: string } | undefined }
   on(event: string, listener: (...args: any[]) => void): () => void
 }
+
+/** The cwd a session is confined to, or undefined when the header has none. */
+export function sessionCwd(session: SessionLike | undefined): string | undefined {
+  const cwd = session?.header?.cwd
+  return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
+}
+
+/**
+ * Whether a session is a subagent child.
+ *
+ * DSH uses `origin: 'subagent'` and/or `delegationDepth > 0` for subagents.
+ * `parentSession` alone is NOT a subagent marker: a user-visible fork of a
+ * normal conversation also sets `parentSession` (seed lineage), and treating
+ * that as a subagent would leave the whole fork unguarded.
+ */
+export function sessionIsSubagent(session: SessionLike | undefined): boolean {
+  const header = session?.header
+  if (header === undefined) return false
+  if (header.origin === 'subagent') return true
+  return typeof header.delegationDepth === 'number' && header.delegationDepth > 0
+}
+
+/** The session this one was forked/delegated from, if any. */
+function sessionParent(session: SessionLike | undefined): string | undefined {
+  const parent = session?.header?.parentSession
+  return typeof parent === 'string' && parent !== '' ? parent : undefined
+}
+
+/** Display title for the enable warning; DSH's header has none, so fall back. */
+function sessionTitle(session: SessionLike | undefined): string | undefined {
+  const title = session?.header?.title
+  if (typeof title === 'string' && title !== '') return title
+  const cwd = sessionCwd(session)
+  return cwd === undefined ? undefined : path.basename(cwd)
+}
+
+/** How long an idle session keeps its deadline alive before it is settled. */
+const IDLE_GRACE_MS = 5_000
 
 /** One installed task definition. */
 export interface TaskDefinition {
@@ -58,20 +112,16 @@ export interface TaskDefinition {
   label: string
   description: string
   asset: string
-  /** Optional host-side setup run after the task asset is copied into the workspace. */
-  prepare?: (workspacePath: string) => void
   /** Defaults applied by the settings page when this task is selected. */
   timeLimitMinutes: number
   timeLimitEnabled: boolean
   needsSetup: boolean
   repoUrl?: string
   remotes?: import('./shared.ts').TaskRemote[]
-  prompt: (blacklist: readonly string[], options: { source: string; workspacePath: string; minutes: number }) => string
-}
-
-/** Resolve a workspace path from a workspace id. */
-function mainOf(guard: Guard): void {
-  void guard
+  /** Workspace-relative test material snapshotted at install and restored at evaluation. */
+  testMaterial?: readonly string[]
+  /** Build the initial prompt for `minutes` (the live wall-clock limit). */
+  prompt: (options: { minutes: number }) => string
 }
 
 /** Event ring + run audit writer. */
@@ -90,6 +140,7 @@ export class Guard {
   private readonly approvalPrev = new Map<string, 'ask' | 'never'>()
   private readonly deadlines = new Map<string, number>()
   private readonly startedAt = new Map<string, number>()
+  private readonly lastActivity = new Map<string, number>()
   private readonly runs = new Map<string, RunRecord>()
   private readonly sessionRuns = new Map<string, string>()
   private readonly offsets = new Map<string, number>()
@@ -97,6 +148,8 @@ export class Guard {
   private toolCache: string[] = []
   private readonly disposers: (() => void)[] = []
   private readonly task: TaskDefinition
+  private lastError: string | undefined
+  private enableRetryAt = 0
   /** Optional hook invoked when any run binds to an agent. */
   onRunAssociated: ((agent: AgentLike, run: RunRecord) => void) | undefined
   /** Optional automatic task binding for every main conversation. */
@@ -175,12 +228,21 @@ export class Guard {
     if (!this.rawConfig) return
     const next = this.configuration
     const wasEnabled = this.enabled
-    if (!wasEnabled && next.enabled) void this.enable()
-    else if (wasEnabled && !next.enabled) this.disable()
+    if (!wasEnabled && next.enabled) {
+      if (Date.now() < this.enableRetryAt) return
+      void this.enable().catch(error => {
+        this.failEnable(error instanceof Error ? error.message : String(error))
+      })
+    } else if (wasEnabled && !next.enabled) {
+      this.disable()
+    }
   }
 
   /** Whether the guard is active. */
   get active(): boolean { return this.enabled }
+
+  /** Why the guard refused to enable, if it did. */
+  get lastFailure(): string | undefined { return this.lastError }
 
   /** Installed tool names currently visible in this deployment. */
   private refreshTools(): void {
@@ -209,32 +271,35 @@ export class Guard {
   /** Ordered path rules from configuration. */
   pathRules(): PathRule[] { return parsePathRules(this.configuration.forbiddenPaths) }
 
-  /** Live conversations for the enable warning. */
+  /** Jobs owned by one session (unowned/global jobs must never be attributed). */
+  private ownJobs(sessionId: string): JobViewLike[] {
+    return (this.services.jobs?.list(sessionId) ?? [])
+      .filter(job => job.owner === sessionId)
+      .filter(job => job.status === 'running' || job.status === 'stopping')
+  }
+
+  /** Live main conversations for the enable warning. */
   runningSessions(): RunningSession[] {
     const out: RunningSession[] = []
     for (const agent of this.services.agents.list()) {
-      const jobs = this.services.jobs?.list(agent.id) ?? []
+      if (!this.isMain(agent.session)) continue
+      const jobs = this.ownJobs(agent.id)
       const running = agent.status === 'running'
-      const jobCount = jobs.filter(job => job.status === 'running' || job.status === 'stopping').length
-      if (!running && jobCount === 0) continue
+      if (!running && jobs.length === 0) continue
       out.push({
         sessionId: agent.id,
-        title: (agent.session.header?.meta?.title as string | undefined) ?? agent.id,
-        cwd: agent.session.header?.meta?.cwd ?? '',
+        title: sessionTitle(agent.session) ?? agent.id,
+        cwd: sessionCwd(agent.session) ?? '',
         running,
-        jobs: jobCount,
+        jobs: jobs.length,
       })
     }
     return out
   }
 
-  /** Whether a session is a user main conversation (not a subagent or plugin child). */
+  /** Whether a session is a user conversation (not a subagent/plugin child). */
   isMain(session: SessionLike | undefined): boolean {
-    if (session === undefined) return false
-    const meta = session.header?.meta
-    if (meta?.origin === 'subagent') return false
-    if (meta?.parentSession !== undefined || meta?.delegationDepth !== undefined) return false
-    return true
+    return session !== undefined && !sessionIsSubagent(session)
   }
 
   /** Approvals are auto-rejected while the guard is active. */
@@ -243,8 +308,12 @@ export class Guard {
     if (approval === undefined) return
     const agent = this.services.agents.get(session.id)
     if (agent === undefined) return
-    if (!this.approvalPrev.has(session.id)) this.approvalPrev.set(session.id, approval.effectivePolicy(session))
-    approval.setPolicy(agent, 'never')
+    try {
+      if (!this.approvalPrev.has(session.id)) this.approvalPrev.set(session.id, approval.effectivePolicy(session))
+      approval.setPolicy(agent, 'never')
+    } catch {
+      // A session can disappear between list() and setPolicy(); do not break enable.
+    }
   }
 
   /** Restore the policy that existed before the guard touched this session. */
@@ -257,17 +326,33 @@ export class Guard {
     if (agent !== undefined && approval !== undefined) approval.setPolicy(agent, previous)
   }
 
+  /** Record an enable-time refusal and back off before retrying. */
+  private failEnable(error: string): { ok: false; error: string } {
+    this.lastError = error
+    this.enableRetryAt = Date.now() + 5_000
+    this.record({ kind: 'notice', detail: '评测守护启用失败：' + error })
+    try { this.ctx.logger.warn('eval-guard: %s', error) } catch { /* logging is optional */ }
+    return { ok: false, error }
+  }
+
   /** Turn the guard on. */
   async enable(): Promise<{ ok: boolean; error?: string }> {
     if (this.enabled) return { ok: true }
     const sandbox = this.services.sandbox
     const policy = this.services.sandboxPolicy
     if (sandbox === undefined || policy === undefined) {
-      return { ok: false, error: 'sandbox service is unavailable; refusing to enable without process confinement' }
+      return this.failEnable('sandbox service is unavailable; refusing to enable without process confinement')
     }
     if (!fs.existsSync(supervisorPath())) {
-      return { ok: false, error: 'native supervisor is not built; run npm run build:native' }
+      return this.failEnable('native supervisor is not built; run npm run build:native')
     }
+    try {
+      fs.accessSync(supervisorPath(), fs.constants.X_OK)
+    } catch {
+      return this.failEnable('native supervisor is not executable; run npm run build:native')
+    }
+    const probe = probeConfinement()
+    if (probe !== undefined) return this.failEnable(probe)
     this.sandboxObject = sandbox
     this.policyObject = policy
     this.origConfine = sandbox.confine.bind(sandbox)
@@ -277,11 +362,16 @@ export class Guard {
       if (!guard.enabled) return guard.origConfine!(argv, executionPolicy, signal)
       const sessionId = typeof executionPolicy['sessionId'] === 'string' ? executionPolicy['sessionId'] : undefined
       const session = sessionId === undefined ? undefined : guard.services.sessions.get(sessionId)
-      if (session === undefined || !guard.isMain(session)) return guard.origConfine!(argv, executionPolicy, signal)
-      const workspace = typeof executionPolicy['workspaceRoot'] === 'string' ? executionPolicy['workspaceRoot'] : session.header?.meta?.cwd
-      if (workspace === undefined || workspace === '') throw new Error('dsh-eval-guard: session has no workspace')
+      // Agentless calls have no session to scope; everything tied to a session,
+      // including subagent sessions, is confined.
+      if (session === undefined) return guard.origConfine!(argv, executionPolicy, signal)
+      const workspace = sessionCwd(session)
+      if (workspace === undefined) throw new Error('dsh-eval-guard: session has no workspace')
       const audit = guard.auditFileFor(session.id)
-      const wrap = wrapSandbox(argv, workspace, workspace, guard.pathRules(), audit)
+      // Do not pin cwd to the workspace here: the supervisor prefers its own
+      // inherited cwd when it lies inside the workspace, so bash's explicit
+      // workdir is preserved. Outside cwd falls back to the workspace.
+      const wrap = wrapSandbox(argv, workspace, '', guard.pathRules(), audit)
       return {
         argv: wrap.argv,
         enforcement: 'full',
@@ -293,25 +383,54 @@ export class Guard {
       const resolved = guard.origResolve!(request)
       if (!guard.enabled) return resolved
       const session = request['session'] as SessionLike | undefined
-      if (session === undefined || !guard.isMain(session)) return resolved
+      if (session === undefined) return resolved
       return { ...resolved, mode: 'workspace-write' }
     }
-    this.enabled = true
-    for (const agent of this.services.agents.list()) {
-      if (this.isMain(agent.session)) this.forceApproval(agent.session)
+    try {
+      for (const agent of this.services.agents.list()) {
+        if (this.isMain(agent.session)) this.forceApproval(agent.session)
+      }
+      try {
+        const runtime = runtimeFiles()
+        if (runtime.ptcProcess === undefined || runtime.ptcControl === undefined) {
+          this.record({ kind: 'notice', detail: '未找到 run_code 运行时（PTC）文件；沙箱内 run_code 可能不可用。' })
+        }
+      } catch {
+        this.record({ kind: 'notice', detail: '无法读取 run_code 运行时（PTC）文件；沙箱内 run_code 可能不可用。' })
+      }
+      this.enabled = true
+      this.lastError = undefined
+      this.enableRetryAt = 0
+      this.record({ kind: 'notice', detail: '评测守护已启用。' })
+      return { ok: true }
+    } catch (error) {
+      this.enabled = false
+      this.restoreHooks()
+      return this.failEnable(error instanceof Error ? error.message : String(error))
     }
-    this.record({ kind: 'notice', detail: '评测守护已启用。' })
-    return { ok: true }
+  }
+
+  /** Restore the original sandbox/policy methods (idempotent). */
+  private restoreHooks(): void {
+    if (this.sandboxObject !== undefined && this.origConfine !== undefined) this.sandboxObject.confine = this.origConfine
+    if (this.policyObject !== undefined && this.origResolve !== undefined) this.policyObject.resolve = this.origResolve
+    this.sandboxObject = undefined
+    this.policyObject = undefined
+    this.origConfine = undefined
+    this.origResolve = undefined
   }
 
   /** Turn the guard off without touching already-running confined processes. */
   disable(): void {
+    this.enableRetryAt = 0
     if (!this.enabled) return
     this.enabled = false
-    if (this.sandboxObject !== undefined && this.origConfine !== undefined) this.sandboxObject.confine = this.origConfine
-    if (this.policyObject !== undefined && this.origResolve !== undefined) this.policyObject.resolve = this.origResolve
-    for (const sessionId of [...this.approvalPrev.keys()]) this.restoreApproval(sessionId)
+    this.restoreHooks()
+    for (const sessionId of [...this.approvalPrev.keys()]) {
+      try { this.restoreApproval(sessionId) } catch { /* a disposed agent has no policy to restore */ }
+    }
     this.deadlines.clear()
+    this.lastActivity.clear()
     this.record({ kind: 'notice', detail: '评测守护已停用。' })
   }
 
@@ -320,6 +439,7 @@ export class Guard {
     const config = this.configuration
     if (!config.timeLimitEnabled) return
     this.deadlines.set(sessionId, Date.now() + config.timeLimitMinutes * 60_000)
+    this.lastActivity.set(sessionId, Date.now())
   }
 
   /** A new main agent appeared. */
@@ -327,19 +447,25 @@ export class Guard {
     if (!this.isMain(agent.session)) return
     this.knownAgents.add(agent.id)
     if (this.enabled) this.forceApproval(agent.session)
-    const cwd = agent.session.header?.meta?.cwd
-    if (cwd !== undefined) {
-      if (this.enabled) {
-        try { this.onAutoRun?.(agent, cwd) } catch { /* optional auto-task binding */ }
-      }
+    const cwd = sessionCwd(agent.session)
+    if (cwd !== undefined && this.enabled) {
+      // resume/clear/compact re-emit agent/created for the same session. An
+      // active run already bound to this session must not be replaced (that
+      // would reset usage and the run's start time); an ended/timeout run is
+      // allowed to be rebound by a fresh turn.
+      const existingRunId = this.sessionRuns.get(agent.id)
+      const existing = existingRunId === undefined ? undefined : this.runs.get(existingRunId)
+      if (existing !== undefined && (existing.status === 'active' || existing.status === 'prepared')) return
+      try { this.onAutoRun?.(agent, cwd) } catch { /* optional auto-task binding */ }
     }
   }
 
   /** An agent went away. */
   private onAgentDisposed(agent: AgentLike): void {
-    this.restoreApproval(agent.id)
+    try { this.restoreApproval(agent.id) } catch { /* disposed agents may have no restorable policy */ }
     this.deadlines.delete(agent.id)
     this.startedAt.delete(agent.id)
+    this.lastActivity.delete(agent.id)
     const runId = this.sessionRuns.get(agent.id)
     if (runId !== undefined) {
       const run = this.runs.get(runId)
@@ -366,7 +492,7 @@ export class Guard {
     run.status = 'active'
     run.provider = agent.options?.provider
     run.model = agent.options?.model
-    run.title = agent.session.header?.meta?.title
+    run.title = sessionTitle(agent.session)
     this.sessionRuns.set(agent.id, runId)
     this.writeRun(run)
     this.writeUsage(runId, this.zeroUsage(run.startedAt))
@@ -376,8 +502,10 @@ export class Guard {
   /** Session event intake. */
   private onSessionEvent(session: SessionLike, event: { type?: string; data?: any }): void {
     if (!this.enabled || session === undefined || !this.isMain(session)) return
+    this.lastActivity.set(session.id, Date.now())
     const runId = this.sessionRuns.get(session.id)
     const run = runId === undefined ? undefined : this.runs.get(runId)
+    const activeRun = run !== undefined && run.status === 'active'
     if (event.type === 'user/message') {
       const source = event.data?.source
       if (source?.kind === 'user') {
@@ -392,49 +520,56 @@ export class Guard {
       }
     } else if (event.type === 'assistant/message') {
       const usage = event.data?.usage
-      if (usage !== undefined && runId !== undefined) this.addUsage(runId, usage)
+      if (usage !== undefined && runId !== undefined && activeRun) this.addUsage(runId, usage)
     } else if (event.type === 'tool/call') {
-      if (runId !== undefined) this.addToolCall(runId)
+      if (runId !== undefined && activeRun) this.addToolCall(runId)
     } else if (event.type === 'turn/end') {
-      if (runId !== undefined) this.addTurn(runId)
+      if (runId !== undefined && activeRun) this.addTurn(runId)
       this.maybeComplete(session.id)
     } else if (event.type === 'turn/start') {
       if (run !== undefined && run.startedAt === null) run.startedAt = Date.now()
     }
   }
 
-  /** Clear a turn deadline once no work remains for that session. */
+  /** Clear a turn deadline once no work remains for that session (with grace). */
   private maybeComplete(sessionId: string): void {
     const agent = this.services.agents.get(sessionId)
-    const jobs = (this.services.jobs?.list(sessionId) ?? []).filter(job => job.status === 'running' || job.status === 'stopping')
-    if (agent?.status === 'running' || jobs.length > 0) return
+    if (agent?.status === 'running' || this.ownJobs(sessionId).length > 0) return
+    const last = this.lastActivity.get(sessionId) ?? 0
+    if (Date.now() - last < IDLE_GRACE_MS) return
     this.deadlines.delete(sessionId)
   }
 
   /** One-second clock: expire deadlines and tail supervisor audits. */
   private tick(): void {
-    this.syncConfig()
-    if (!this.enabled) return
-    const now = Date.now()
-    for (const [sessionId, deadline] of [...this.deadlines]) {
-      if (deadline > now) {
-        // A finished turn with no owned or descendant work no longer needs a deadline.
-        const agent = this.services.agents.get(sessionId)
-        const ownJobs = (this.services.jobs?.list(sessionId) ?? [])
-          .some(job => job.status === 'running' || job.status === 'stopping')
-        const descendantRunning = this.descendants(sessionId).some(id => {
-          const child = this.services.agents.get(id)
-          if (child?.status === 'running') return true
-          return (this.services.jobs?.list(id) ?? []).some(job => job.status === 'running' || job.status === 'stopping')
-        })
-        if (agent?.status !== 'running' && !ownJobs && !descendantRunning) this.deadlines.delete(sessionId)
-        continue
+    try {
+      this.syncConfig()
+      if (!this.enabled) return
+      const now = Date.now()
+      for (const [sessionId, deadline] of [...this.deadlines]) {
+        if (deadline > now) {
+          // A finished turn with no owned or descendant work no longer needs a deadline.
+          const agent = this.services.agents.get(sessionId)
+          const ownJobs = this.ownJobs(sessionId).length > 0
+          const last = this.lastActivity.get(sessionId) ?? 0
+          const descendantRunning = this.descendants(sessionId).some(id => {
+            const child = this.services.agents.get(id)
+            if (child?.status === 'running') return true
+            return this.ownJobs(id).length > 0
+          })
+          if (agent?.status !== 'running' && !ownJobs && !descendantRunning && now - last >= IDLE_GRACE_MS) {
+            this.deadlines.delete(sessionId)
+          }
+          continue
+        }
+        this.deadlines.delete(sessionId)
+        this.expire(sessionId)
       }
-      this.deadlines.delete(sessionId)
-      this.expire(sessionId)
+      this.tailAudits()
+      this.cleanupTemp()
+    } catch (error) {
+      try { this.ctx.logger.warn('eval-guard: tick failed: %s', error instanceof Error ? error.message : String(error)) } catch { /* logging is optional */ }
     }
-    this.tailAudits()
-    this.cleanupTemp()
   }
 
   /** Kill one session's turn, descendants, and jobs. */
@@ -446,11 +581,11 @@ export class Guard {
       if (agent !== undefined && agent.status === 'running') {
         try { agent.cancel({ kind: 'hook', reason }) } catch { /* already gone */ }
       }
-      for (const job of this.services.jobs?.list(id) ?? []) {
-        if (job.status === 'running' || job.status === 'stopping') {
-          try { this.services.jobs?.kill(job.id, id, '评测时间上限') } catch { /* already gone */ }
-        }
+      for (const job of this.ownJobs(id)) {
+        try { this.services.jobs?.kill(job.id, id, '评测时间上限') } catch { /* already gone */ }
       }
+      this.deadlines.delete(id)
+      this.lastActivity.delete(id)
     }
     const runId = this.sessionRuns.get(sessionId)
     if (runId !== undefined) {
@@ -460,18 +595,20 @@ export class Guard {
         run.endedAt = Date.now()
         this.writeRun(run)
         this.record({ kind: 'timeout', runId, sessionId, detail: reason })
+        return
       }
-    } else {
-      this.record({ kind: 'timeout', sessionId, detail: reason })
     }
+    this.record({ kind: 'timeout', sessionId, detail: reason })
   }
 
   /** Direct and transitive subagent sessions of one main session. */
   private descendants(sessionId: string): string[] {
-    const all = this.services.agents.list()
     const children = new Map<string, string[]>()
-    for (const agent of all) {
-      const parent = agent.session.header?.meta?.parentSession
+    for (const agent of this.services.agents.list()) {
+      // parentSession also records fork lineage for user-visible sessions; only
+      // origin/delegationDepth identify a real subagent child.
+      if (!sessionIsSubagent(agent.session)) continue
+      const parent = sessionParent(agent.session)
       if (parent === undefined) continue
       const list = children.get(parent) ?? []
       list.push(agent.id)
@@ -492,7 +629,7 @@ export class Guard {
   private checkTool(exec: { name: string; arguments: unknown; agent?: AgentLike }): string | undefined {
     if (!this.enabled) return undefined
     const agent = exec.agent
-    if (agent === undefined || !this.isMain(agent.session)) return undefined
+    if (agent === undefined) return undefined
     const name = String(exec.name)
     if (WAIT_TOOLS.includes(name)) {
       this.record({ kind: 'wait-blocked', sessionId: agent.id, tool: name, detail: '评测任务不允许等待用户输入。' })
@@ -502,8 +639,12 @@ export class Guard {
       this.record({ kind: 'tool-blocked', sessionId: agent.id, tool: name, detail: '该工具在评测黑名单中。' })
       return '该工具在本次评测的黑名单中，调用已被阻止。'
     }
-    const workspace = agent.session.header?.meta?.cwd
-    if (workspace === undefined || workspace === '') return undefined
+    const workspace = sessionCwd(agent.session)
+    if (workspace === undefined) {
+      if (!isAuditedTool(name)) return undefined
+      this.record({ kind: 'path-denied', sessionId: agent.id, tool: name, detail: '会话没有工作区，无法审计路径。' })
+      return '评测守护：无法确定会话工作区，文件类工具已被阻止。'
+    }
     const decision = auditToolCall(name, exec.arguments, workspace, this.pathRules())
     if (!decision.allow) {
       this.record({
@@ -697,9 +838,9 @@ export class Guard {
 
   /** Build the prompt for one task with only installed tools listed. */
   promptFor(workspacePath: string, source: string, task: TaskDefinition = this.task): string {
-    const present = new Set(this.toolCache)
-    const blacklist = parseBlacklist(this.blacklistText()).filter(name => isBaseBlacklistName(name) || present.has(name))
-    return task.prompt(blacklist, { source, workspacePath, minutes: this.configuration.timeLimitMinutes })
+    void workspacePath
+    void source
+    return task.prompt({ minutes: this.configuration.timeLimitMinutes })
   }
 
   /** The task definition. */

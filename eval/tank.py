@@ -16,5 +16,14 @@ with tempfile.TemporaryDirectory(prefix='tank-eval-') as td:
     result = run_legacy(EVAL_ROOT / 'legacy' / 'tank.py', ['--submissions', str(temp), '--arena', str(EVAL_ROOT / 'arena' / 'tank'), '--tier', 'quick'], temp / 'out')
     if not result.get('ok'):
         raise SystemExit(fail({'task': 'tank', 'ok': False, 'error': result.get('error', 'evaluation failed')}))
-    row = candidate_row(result['summary'])
-    emit({'task': 'tank', 'ok': True, 'score': row.get('score', row.get('rating', row.get('theta', 0))), 'rating': row.get('rating', row.get('theta', 0)), 'wins': row.get('wins', 0), 'losses': row.get('losses', 0), 'draws': row.get('draws', 0)})
+    summary = result['summary']
+    row = candidate_row(summary)
+    if not row:
+        raise SystemExit(fail({'task': 'tank', 'ok': False, 'error': 'candidate row missing from evaluator summary'}))
+    wins = draws = losses = 0
+    for pair in summary.get('pairwise') or []:
+        if pair.get('a') == 'candidate':
+            wins += int(pair.get('wins', 0)); draws += int(pair.get('draws', 0)); losses += int(pair.get('losses', 0))
+        elif pair.get('b') == 'candidate':
+            wins += int(pair.get('losses', 0)); draws += int(pair.get('draws', 0)); losses += int(pair.get('wins', 0))
+    emit({'task': 'tank', 'ok': True, 'score': row.get('rating', 0), 'rating': row.get('rating', 0), 'wins': wins, 'losses': losses, 'draws': draws, 'games': row.get('games', 0)})

@@ -4,6 +4,7 @@
  * a host-side seccomp supervisor that denies out-of-view file/network effects.
  * @module dsh-eval-guard/sandbox
  */
+import { spawnSync } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -19,6 +20,27 @@ export function packageRoot(): string {
 /** Path of the compiled native supervisor. */
 export function supervisorPath(): string {
   return path.join(packageRoot(), 'native', 'dsh-eval-supervisor')
+}
+
+/**
+ * Probe the two host capabilities the guard depends on: a usable bwrap binary
+ * and unprivileged user namespaces. Returns a human-readable failure, or
+ * undefined when confinement is expected to work.
+ */
+export function probeConfinement(): string | undefined {
+  const version = spawnSync('bwrap', ['--version'], { timeout: 2_000, encoding: 'utf8' })
+  if (version.error !== undefined || version.status !== 0) {
+    return 'bubblewrap (bwrap) is unavailable; refusing to enable without process confinement'
+  }
+  const probe = spawnSync('bwrap', [
+    '--unshare-all', '--die-with-parent',
+    '--ro-bind', '/', '/', '--dev', '/dev', '--proc', '/proc',
+    '--', '/bin/true',
+  ], { timeout: 5_000, encoding: 'utf8' })
+  if (probe.error !== undefined || probe.status !== 0) {
+    return 'bubblewrap cannot create an unprivileged user namespace on this host; refusing to enable without process confinement'
+  }
+  return undefined
 }
 
 /** Launcher-provided facts; nothing here is a fixed install path. */
@@ -75,6 +97,19 @@ const SYSTEM_READ_DIRS: readonly string[] = [
  */
 const SYSTEM_READ_FILES: readonly string[] = ['/run/utmp', '/run/utmpx', '/var/log/wtmp']
 
+/** Host environment variables that are safe to expose to a confined command. */
+const SAFE_ENV_KEYS: readonly string[] = [
+  'USER', 'LOGNAME', 'SHELL', 'TZ',
+  'SSL_CERT_FILE', 'SSL_CERT_DIR', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE',
+  'NODE_EXTRA_CA_CERTS', 'GIT_SSL_CAINFO',
+]
+
+/** Whether `root` is `target` or an ancestor of it. */
+function containsPath(root: string, target: string): boolean {
+  const relative = path.relative(root, target)
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
+}
+
 /** Python stdlib/venv directories that may live next to a workspace. */
 function pythonRuntimeDirs(workspace: string): string[] {
   const dirs = new Set<string>()
@@ -110,19 +145,42 @@ export function ancestorsOf(target: string): string[] {
 }
 
 /** Resolve one package directory from the host launch world. */
+/** Likely roots for the running DSH installation (app, checkout, or profile). */
+function runtimeRoots(): string[] {
+  const roots = new Set<string>()
+  const starts: string[] = [fileURLToPath(new URL('..', import.meta.url)), process.cwd()]
+  if (process.argv[1] !== undefined) starts.push(path.dirname(process.argv[1]))
+  if (process.env.DSH_CHECKOUT !== undefined && process.env.DSH_CHECKOUT !== '') starts.push(process.env.DSH_CHECKOUT)
+  for (const start of starts) {
+    let current = path.resolve(start)
+    for (let depth = 0; depth < 8; depth += 1) {
+      roots.add(current)
+      const parent = path.dirname(current)
+      if (parent === current) break
+      current = parent
+    }
+  }
+  return [...roots]
+}
+
+/** Checkout-relative guesses for DSH source layouts. */
+const CHECKOUT_PATHS: Record<string, readonly string[]> = {
+  '@deepseek-ai/dsh-ptc-runtime-node': ['packages/ptc-runtime/ptc-runtime-node'],
+  '@deepseek-ai/dsh-subprocess': ['packages/subprocess/subprocess'],
+}
+
 function packageDir(name: string): string | undefined {
   const candidates: string[] = []
-  try {
-    const require = createRequire(path.join(process.cwd(), 'noop.js'))
-    candidates.push(path.dirname(require.resolve(name + '/package.json')))
-  } catch {
-    // fall through to source-checkout guesses
-  }
-  if (name === '@deepseek-ai/dsh-ptc-runtime-node') {
-    candidates.push(path.join(process.cwd(), 'packages', 'ptc-runtime', 'ptc-runtime-node'))
-  }
-  if (name === '@deepseek-ai/dsh-subprocess') {
-    candidates.push(path.join(process.cwd(), 'packages', 'subprocess', 'subprocess'))
+  const roots = runtimeRoots()
+  for (const root of roots) {
+    try {
+      const require = createRequire(path.join(root, 'noop.js'))
+      candidates.push(path.dirname(require.resolve(name + '/package.json')))
+    } catch {
+      // keep looking
+    }
+    candidates.push(path.join(root, 'node_modules', name))
+    for (const relative of CHECKOUT_PATHS[name] ?? []) candidates.push(path.join(root, relative))
   }
   for (const modules of profileNodeModules()) candidates.push(path.join(modules, name))
   for (const candidate of candidates) {
@@ -266,13 +324,20 @@ function writePolicy(workspace: string, rules: readonly PathRule[]): string {
   // that bind would shadow the workspace itself. The supervisor is told not to
   // translate /tmp in that layout.
   const underHostTmp = workspace === '/tmp' || workspace.startsWith('/tmp/')
-  if (!underHostTmp) lines.push(line('tmpbind', path.join(workspace, '.tmp')))
+  if (!underHostTmp) {
+    lines.push(line('tmpbind', path.join(workspace, '.tmp')))
+  } else {
+    // The sandbox mounts a private tmpfs at /tmp (see bwrapArgs); the
+    // supervisor must treat that ephemeral tmpfs as writable, while the host
+    // /tmp never appears in the mount view at all.
+    lines.push(line('tmpfs', '/tmp'))
+  }
   fs.writeFileSync(file, lines.join('\n') + '\n', { encoding: 'utf8', mode: 0o600 })
   return file
 }
 
 /** Build the bwrap profile arguments for one workspace. */
-function bwrapArgs(workspace: string, cwd: string, rules: readonly PathRule[], runtime: RuntimeFiles): string[] {
+function bwrapArgs(workspace: string, rules: readonly PathRule[], runtime: RuntimeFiles): string[] {
   const args: string[] = ['--unshare-all', '--die-with-parent', '--new-session', '--as-pid-1']
   for (const system of SYSTEM_READ_DIRS) {
     try {
@@ -291,17 +356,19 @@ function bwrapArgs(workspace: string, cwd: string, rules: readonly PathRule[], r
     args.push('--dir', '/var/log')
   }
   for (const file of systemFiles) args.push('--ro-bind', file, file)
-  args.push('--bind', workspace, workspace)
   const tmp = path.join(workspace, '.tmp')
   ensureDir(tmp)
   const underHostTmp = workspace === '/tmp' || workspace.startsWith('/tmp/')
   let tmpdirForChild = '/tmp'
   if (underHostTmp) {
+    // A workspace that lives under the host /tmp must have the private tmpfs
+    // mounted BEFORE its own bind: mounting it afterwards would shadow the
+    // workspace subtree with an empty tmpfs.
     args.push('--tmpfs', '/tmp')
     tmpdirForChild = tmp
-  } else {
-    args.push('--bind', tmp, '/tmp')
   }
+  args.push('--bind', workspace, workspace)
+  if (!underHostTmp) args.push('--bind', tmp, '/tmp')
   const supervisorFile = supervisorPath()
   if (fs.existsSync(supervisorFile)) args.push('--ro-bind', supervisorFile, supervisorFile)
   args.push('--ro-bind', runtime.node, runtime.node)
@@ -321,11 +388,21 @@ function bwrapArgs(workspace: string, cwd: string, rules: readonly PathRule[], r
   for (const file of [runtime.ptcProcess, runtime.ptcControl]) if (file !== undefined) args.push('--ro-bind', file, file)
   for (const dir of pythonRuntimeDirs(workspace)) args.push('--ro-bind', dir, dir)
   // Read-only exceptions the user asked for ('!' lines).
+  //
+  // An exception is an audit rule first; it must not turn into a host mount
+  // that exposes the user's home, the DSH state directory, the shared /tmp, or
+  // an ancestor of the writable workspace. System directories are already
+  // mounted read-only above.
   for (const rule of rules) {
     if (!rule.allow) continue
     try {
       const real = fs.realpathSync.native(rule.path)
-      if (real !== workspace && !real.startsWith(workspace + '/')) args.push('--ro-bind', real, real)
+      if (containsPath(real, workspace) || containsPath(workspace, real)) continue
+      if (containsPath(real, guardRoot()) || containsPath(guardRoot(), real)) continue
+      if (containsPath(real, dshHome()) || containsPath(dshHome(), real)) continue
+      if (real === '/tmp' || real.startsWith('/tmp/')) continue
+      if (SYSTEM_READ_DIRS.some(system => real === system || real.startsWith(system + '/'))) continue
+      args.push('--ro-bind', real, real)
     } catch {
       // absent exception path is ignored
     }
@@ -335,11 +412,14 @@ function bwrapArgs(workspace: string, cwd: string, rules: readonly PathRule[], r
   const config = path.join(workspace, '.config')
   const data = path.join(workspace, '.local', 'share')
   for (const dir of [home, cache, config, data]) ensureDir(dir)
-  for (const name of [
-    'LD_LIBRARY_PATH', 'PYTHONPATH', 'MVCAM_SDK_PATH', 'AMENT_PREFIX_PATH', 'COLCON_PREFIX_PATH',
-    'CMAKE_PREFIX_PATH', 'ROS_DISTRO', 'ROS_VERSION', 'ROS_PYTHON_VERSION', 'NODE_OPTIONS',
-    'NODE_PATH', 'PYTHONSTARTUP', 'PYTHONHOME',
-  ]) args.push('--unsetenv', name)
+  // The host environment carries credentials and operator state that confined
+  // candidate/agent code must not see. Clear it completely, then add back only
+  // locale/path/terminal plumbing.
+  args.push('--clearenv')
+  for (const name of SAFE_ENV_KEYS) {
+    const value = process.env[name]
+    if (value !== undefined && value !== '') args.push('--setenv', name, value)
+  }
   args.push('--setenv', 'PATH', '/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin')
   args.push('--setenv', 'HOME', home)
   args.push('--setenv', 'TMPDIR', tmpdirForChild)
@@ -359,7 +439,8 @@ function bwrapArgs(workspace: string, cwd: string, rules: readonly PathRule[], r
  * Wrap one argv in the strict sandbox.
  * @param argv - the exact command the consumer was about to spawn.
  * @param workspace - session cwd.
- * @param cwd - working directory the consumer will use (same as workspace in practice).
+ * @param cwd - explicit working directory override; the empty string lets the
+ *   supervisor use its inherited cwd when that cwd lies inside the workspace.
  * @param rules - ordered forbidden-path rules.
  * @param auditFile - host-side audit path the supervisor appends to.
  */
@@ -370,7 +451,6 @@ export function wrapSandbox(
   rules: readonly PathRule[],
   auditFile: string,
 ): SandboxWrap {
-  void cwd
   const supervisor = supervisorPath()
   if (!fs.existsSync(supervisor)) throw new Error('dsh-eval-guard: native supervisor is missing; refusing to run unconfined')
   ensureDir(guardRoot())
@@ -382,9 +462,15 @@ export function wrapSandbox(
   ensureDir(path.join(workspace, '.local', 'share'))
   const policyFile = writePolicy(workspace, rules)
   const runtime = runtimeFiles()
-  const args = bwrapArgs(workspace, cwd, rules, runtime)
+  const args = bwrapArgs(workspace, rules, runtime)
+  // The supervisor runs with the consumer's cwd. When no explicit cwd is
+  // requested it uses its inherited cwd when that cwd is inside the workspace,
+  // which preserves the bash tool's workdir; otherwise it falls back to the
+  // workspace. Scanning argv for a later '--' broke commands that carry one of
+  // their own (for example `bash -- -c ...`).
+  const cwdArgs = cwd === '' ? [] : ['--cwd', cwd]
   return {
-    argv: [supervisor, '--policy', policyFile, '--audit', auditFile, '--', 'bwrap', ...args, '--', ...argv],
+    argv: [supervisor, '--policy', policyFile, '--audit', auditFile, ...cwdArgs, '--', 'bwrap', ...args, '--', ...argv],
     policyFile,
     auditFile,
   }

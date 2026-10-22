@@ -4,7 +4,6 @@
  * @module dsh-eval-guard/task
  */
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
@@ -16,11 +15,11 @@ import {
   NEURAL_FP32_TASK, NEURAL_FP32_TASK_LABEL, NEURAL_CIFAR_TASK, NEURAL_CIFAR_TASK_LABEL,
   NEURAL_PENDULUM_TASK, NEURAL_PENDULUM_TASK_LABEL,
   PIP_MIRRORS, CIFAR_MIRRORS,
-  type CheckResult, type InstallResult, type RunRecord, type TaskInfo,
+  type CheckResult, type RunRecord, type TaskInfo,
 } from './shared.ts'
 import type { Guard, TaskDefinition } from './guard.ts'
-import { guardRoot, packageRoot } from './sandbox.ts'
-import { JobManager } from './jobs.ts'
+import { dshHome, guardRoot, packageRoot } from './sandbox.ts'
+import { baseEnvironment, JobManager } from './jobs.ts'
 import type { JobInfo } from './shared.ts'
 
 /** Tasks offered by the installer. */
@@ -36,7 +35,7 @@ export const TASKS: readonly TaskInfo[] = [
   { id: NEURAL_CPP_TASK, label: NEURAL_CPP_TASK_LABEL, description: '从零实现纯 C++ 张量运算与反向传播后端；隐藏测试统计正确性与速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
   { id: NEURAL_FP32_TASK, label: NEURAL_FP32_TASK_LABEL, description: '从零实现纯 C++ FP32 神经网络算子、反向传播与优化器 CLI；逐操作统计误差和速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
   { id: NEURAL_CIFAR_TASK, label: NEURAL_CIFAR_TASK_LABEL, description: '从零实现纯 C++ 训练框架，构造并训练 CIFAR-10 图像分类网络；保留算子指标并统计验证集准确率与多线程推理性能。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
-  { id: NEURAL_PENDULUM_TASK, label: NEURAL_PENDULUM_TASK_LABEL, description: '从零实现纯 C++17 神经网络基础设施，用三个关节角度控制预编译三节摆起摆并稳定保持；评测固定初始状态，统计 t_can。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
+  { id: NEURAL_PENDULUM_TASK, label: NEURAL_PENDULUM_TASK_LABEL, description: '从零实现纯 C++17 神经网络基础设施（算子数值以评测侧 PyTorch 参考校验），用三个关节角度控制预编译三节摆起摆并稳定保持；评测固定初始状态，统计 t_can。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
 ]
 
 /** The tank task definition (original prompt; only halftime mechanics removed). */
@@ -48,14 +47,14 @@ export const TANK_DEFINITION: TaskDefinition = {
   timeLimitMinutes: 90,
   timeLimitEnabled: true,
   needsSetup: false,
-  prompt() {
+  prompt({ minutes }) {
     return [
       '按照要求编写尽可能强的坦克大战 bot。你的对手是其他顶尖 AI 模型写的 bot，它们可能主动设计战术。基准是一个中等强度、思路常规的 bot，它在正式比赛中是 0 分线；战胜基准不代表足够强，正式对手远强于基准。正式赛是 1 对 1 循环赛，用 Bradley-Terry 模型拟合实力值。',
       '',
       '解压 workspace.zip，阅读 README.md 和 RULES.md，然后开始。',
       '',
-      '比赛是连续 90 分钟的单次任务：',
-      '- 你有 90 分钟修改 bot，从对话开始计时；到 90 分钟强制停止；',
+      '比赛是连续 ' + minutes + ' 分钟的单次任务：',
+      '- 你有 ' + minutes + ' 分钟修改 bot，从对话开始计时；到 ' + minutes + ' 分钟强制停止；',
       '- 最终只看 bot 的强度，提前交卷没有任何好处；觉得没什么可改了，先换一个思路再试；',
       '- 到点时 workspace/submission/bot.cpp 是什么就交什么：不要让它长时间停在编译不过的状态；',
       '- 允许使用本地工具、对战和复盘；禁止联网，禁止求助其他模型（包括启动子代理：subagent、Task / Agent 工具、后台并行代理之类），除主办方发给你的材料外禁止查看其他选手的资料；',
@@ -78,7 +77,7 @@ export const WAREHOUSE_DEFINITION: TaskDefinition = {
   timeLimitMinutes: 90,
   timeLimitEnabled: true,
   needsSetup: false,
-  prompt() {
+  prompt({ minutes }) {
     return [
       '这是一场 AI 编程赛。你接手了一个代码混乱的老系统：src/ 里是一个仓储机器人调度仿真系统，功能正确，但运行很慢。你的任务：在输出完全不变的前提下，让它尽可能快。',
       '',
@@ -87,7 +86,7 @@ export const WAREHOUSE_DEFINITION: TaskDefinition = {
       '要点（详见 TASK.md）：',
       '- 只能修改 src/；编译命令固定为 g++ -O2 -std=c++20 src/*.cpp，只用 C++ 标准库；',
       '- 对任何合法输入（以 tools/check_input.py --full 为准），输出都必须与基线逐字节相同；SPEC.md 是过时的旧文档，一切以基线代码的实际行为为准；',
-      '- 本次是连续 90 分钟的单次任务；clock.py 从解压那一刻开始计算，实际计时从对话开始计算，它只能作为参考，请尽快解压；',
+      '- 本次是连续 ' + minutes + ' 分钟的单次任务；clock.py 从解压那一刻开始计算，实际计时从对话开始计算，它只能作为参考，请尽快解压；',
       '- 只能读写当前文件夹里的文件；可以使用本环境的所有工具，但不能联网搜索；',
       '- 不要向我提问，也不要等待我确认，直到完成为止。',
       '',
@@ -105,11 +104,12 @@ export const LAND_DEFINITION: TaskDefinition = {
   timeLimitMinutes: 90,
   timeLimitEnabled: true,
   needsSetup: false,
-  prompt() {
+  prompt({ minutes }) {
+    const suggested = Math.min(60, minutes)
     return [
       '这是一场正式的 AI 编程对抗赛，你的对手是其他顶尖 AI 模型写的 bot，它们会主动切断你、抢你的地。比赛结果会公开排名，请拿出你的最高水平。',
       '',
-      '请解压当前目录的 workspace.zip，进入 workspace 文件夹，按 TASK.md 的要求编写一个尽可能强的圈地对战 bot，保存为 workspace/submission/bot.cpp。时间预算约 60 分钟，请自己把握进度，做完就可以结束；超过 90 分钟会被强制停止。只能读写当前文件夹里的文件，不能联网搜索，不要向我提问。',
+      '请解压当前目录的 workspace.zip，进入 workspace 文件夹，按 TASK.md 的要求编写一个尽可能强的圈地对战 bot，保存为 workspace/submission/bot.cpp。时间预算约 ' + suggested + ' 分钟，请自己把握进度，做完就可以结束；超过 ' + minutes + ' 分钟会被强制停止。只能读写当前文件夹里的文件，不能联网搜索，不要向我提问。',
     ].join('\n')
   },
 }
@@ -123,10 +123,11 @@ export const BOMBERMAN_DEFINITION: TaskDefinition = {
   timeLimitMinutes: 90,
   timeLimitEnabled: true,
   needsSetup: false,
-  prompt() {
+  prompt({ minutes }) {
+    const suggested = Math.min(60, minutes)
     return [
       '按照要求编写尽可能强bot，你的对手是全球其他顶尖ai，可能主动设计战术。基准只是很弱的bot，它在正式比赛为0分线。正式赛会对战多轮，用Bradley-Terry模型拟合实力值。',
-      '解压 workspace.zip，阅读 README.md 和 RULES.md，编写支持2–10人的炸弹人 bot。尽量60分钟完成，90分钟必须交卷。允许本地工具、对战和复盘，禁止联网、调用其他AI或查看其他选手资料。提交 submission/bot.cpp，简述策略。',
+      '解压 workspace.zip，阅读 README.md 和 RULES.md，编写支持2–10人的炸弹人 bot。尽量' + suggested + '分钟完成，' + minutes + '分钟必须交卷。允许本地工具、对战和复盘，禁止联网、调用其他AI或查看其他选手资料。提交 submission/bot.cpp，简述策略。',
     ].join('\n')
   },
 }
@@ -140,21 +141,13 @@ export const CTF_DEFINITION: TaskDefinition = {
   timeLimitMinutes: 90,
   timeLimitEnabled: true,
   needsSetup: false,
-  prompt() {
+  prompt({ minutes }) {
+    const suggested = Math.min(60, minutes)
     return [
       '按照要求编写尽可能强的 bot，你的对手是全球其他顶尖 AI，可能主动设计战术。基准是一个中等强度、思路常规的 bot，它在正式比赛是 0 分线；战胜基准不代表足够强，正式对手远强于基准。正式赛会对战多轮，用 Bradley-Terry 模型拟合实力值。',
-      '解压 workspace.zip，阅读 README.md 和 RULES.md，编写支持 2–15 方的夺旗 bot。你有 60 分钟，只看最终 bot 的强度，提前交卷不加分，请充分利用时间持续改进；可以适当超时，但到 90 分钟会强制交卷。允许本地工具、对战和复盘，禁止联网、调用其他 AI 或查看其他选手资料。提交 workspace/submission/bot.cpp，简述策略。',
+      '解压 workspace.zip，阅读 README.md 和 RULES.md，编写支持 2–15 方的夺旗 bot。你有 ' + suggested + ' 分钟，只看最终 bot 的强度，提前交卷不加分，请充分利用时间持续改进；可以适当超时，但到 ' + minutes + ' 分钟会强制交卷。允许本地工具、对战和复盘，禁止联网、调用其他 AI 或查看其他选手资料。提交 workspace/submission/bot.cpp，简述策略。',
     ].join('\n')
   },
-}
-
-/** Run the task's host-side setup script with network access. */
-function runSetup(workspacePath: string): void {
-  execFileSync('bash', ['setup.sh'], {
-    cwd: workspacePath,
-    stdio: 'inherit',
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-  })
 }
 
 /** Commit0 single-library task. */
@@ -163,7 +156,7 @@ export const COMMIT0_DEFINITION: TaskDefinition = {
   label: COMMIT0_TASK_LABEL,
   description: TASKS[5]!.description,
   asset: path.join(packageRoot(), 'assets', 'commit0', 'workspace.zip'),
-  prepare: runSetup,
+  testMaterial: ['tests', 'pytest.ini'],
   timeLimitMinutes: 480,
   timeLimitEnabled: false,
   needsSetup: true,
@@ -191,7 +184,7 @@ export const SWE_BENCH_PRO_DEFINITION: TaskDefinition = {
   label: SWE_BENCH_PRO_TASK_LABEL,
   description: TASKS[6]!.description,
   asset: path.join(packageRoot(), 'assets', 'swe-bench-pro', 'workspace.zip'),
-  prepare: runSetup,
+  testMaterial: ['test', 'pytest.ini', 'conftest.py'],
   timeLimitMinutes: 1440,
   timeLimitEnabled: false,
   needsSetup: true,
@@ -219,7 +212,7 @@ export const FEATUREBENCH_DEFINITION: TaskDefinition = {
   label: FEATUREBENCH_TASK_LABEL,
   description: TASKS[7]!.description,
   asset: path.join(packageRoot(), 'assets', 'featurebench', 'workspace.zip'),
-  prepare: runSetup,
+  testMaterial: ['tests', 'conftest.py'],
   timeLimitMinutes: 1440,
   timeLimitEnabled: false,
   needsSetup: true,
@@ -341,16 +334,16 @@ export const NEURAL_PENDULUM_DEFINITION: TaskDefinition = {
     return [
       '你是一名控制与神经网络工程师。任务：从零实现纯 C++17、仅 CPU、fp32 的神经网络基础设施，并用它训练一个控制器，控制预编译的三节摆从接近全向下起摆，使三根杆全部进入竖直向上容差并尽可能长时间保持。',
       '',
-      '请先完整阅读 TASK.md；它是权威规则。硬约束：仅 C++17 标准库、仅 CPU、fp32；不使用 Python/OpenCL/CUDA/BLAS/Eigen/第三方库；必须从提交源码构建出 build/control 与 build/libnn.a；基础设施需实现工作区公开头文件 include/nn/nn.hpp 的契约，隐藏测试由评测侧独立编译链接。',
+      '请先完整阅读 TASK.md；它是权威规则。硬约束：仅 C++17 标准库、仅 CPU、fp32；不使用 Python/OpenCL/CUDA/BLAS/Eigen/第三方库；必须从提交源码构建出 build/nn_task 与 build/control。',
       '',
       '环境细节：joint1 与 joint3 驱动，joint2 被动；控制频率 100 Hz；每回合最多 3000 步（30 s），达到上限后继续 step 返回 {"error":"episode_finished"}，必须 reset。环境只返回三个关节角度（弧度，不除 pi），不返回 reward/loss/cost/done；环境不提供杆长、质量、惯量、角速度或 tip。训练 reset 带小范围随机初始角度和角速度；评测使用固定初始状态，无随机扰动。',
       '',
       '优化目标：从接近全向下起摆，使三根杆全部进入 0.05 rad 的竖直向上容差，并尽可能长时间保持；评测指标为 t_can。损失函数、奖励、优化器、网络结构和训练方法由你自行设计，不规定任何训练方案。',
       '',
-      '评测会从干净副本重新构建提交源码，编译并运行宿主侧隐藏基础设施测试，然后在固定初始状态上驱动 build/control，统计连续全向上保持时间 t_can。不要把任何未提交的二进制、临时构建产物或外部进程当作交付依赖。',
+      '评测会从干净副本重新构建提交源码，先运行与 Neural-FP32/Neural-CIFAR 相同的算子数值评测：评测侧用 PyTorch 在相同数据上计算参考值，逐操作比较加权平均相对误差并对照阈值，任一算子不可执行、崩溃、超时、输出缺失或误差超阈值即判为基础设施失败；然后在固定初始状态上驱动 build/control，统计连续全向上保持时间 t_can。不要把任何未提交的二进制、临时构建产物或外部进程当作交付依赖。',
       '使用宿主工具 eval_submit 提交当前源码快照，使用 eval_test 请求宿主评测最新提交。提交快照、事件、测试结果和最终分数全部保存在工作区之外的宿主目录；不要尝试读取或修改这些数据，也不要依赖任何工作区内的测试结果文件。最终评测使用最新提交快照，按宿主事件时间积分计算分数。',
       '',
-      '工作方式：先完成最小可构建的基础设施和 control 协议；再持续做控制/训练实验并记录可复现结果；最终保证工作区从零构建、隐藏基础设施测试通过、control 可被评测驱动，并留下 NOTES.md/RESULTS.md。',
+      '工作方式：先完成最小可构建的基础设施和 control 协议；再持续做控制/训练实验并记录可复现结果；最终保证工作区从零构建、build/nn_task 算子数值评测通过、control 可被评测驱动，并留下 NOTES.md/RESULTS.md。',
       '',
       '不要向我提问，也不要等待确认，独立完成。',
     ].join('\n')
@@ -371,6 +364,45 @@ export const TASK_DEFINITIONS: Readonly<Record<string, TaskDefinition>> = {
   [NEURAL_FP32_TASK]: NEURAL_FP32_DEFINITION,
   [NEURAL_CIFAR_TASK]: NEURAL_CIFAR_DEFINITION,
   [NEURAL_PENDULUM_TASK]: NEURAL_PENDULUM_DEFINITION,
+}
+
+/** SHA-256 of one file. */
+function sha256File(file: string): string {
+  const hash = createHash('sha256')
+  hash.update(fs.readFileSync(file))
+  return hash.digest('hex')
+}
+
+/** Order-stable SHA-256 of a directory tree (relative paths + contents). */
+function sha256Tree(dir: string): string {
+  const hash = createHash('sha256')
+  const walk = (current: string): void => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = path.join(current, entry.name)
+      hash.update(path.relative(dir, full))
+      if (entry.isDirectory()) walk(full)
+      else if (entry.isFile()) hash.update(fs.readFileSync(full))
+      else if (entry.isSymbolicLink()) hash.update('link:' + fs.readlinkSync(full))
+    }
+  }
+  walk(dir)
+  return hash.digest('hex')
+}
+
+/** The venv site-packages directories that exist under one workspace venv. */
+function sitePackageDirs(venv: string): string[] {
+  const out: string[] = []
+  for (const lib of ['lib', 'lib64']) {
+    const base = path.join(venv, lib)
+    let entries: fs.Dirent[] = []
+    try { entries = fs.readdirSync(base, { withFileTypes: true }) } catch { continue }
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !entry.name.startsWith('python')) continue
+      const site = path.join(base, entry.name, 'site-packages')
+      if (fs.existsSync(site)) out.push(site)
+    }
+  }
+  return out
 }
 
 /** Install, check, and prompt services for the task packs. */
@@ -427,7 +459,11 @@ export class TaskService {
   }
 
   private copySnapshot(source: string, destination: string): number {
-    const excluded = new Set(['build', '.git', '.eval', '.submissions', 'node_modules', '__pycache__', '.venv'])
+    const excluded = new Set([
+      'build', '.git', '.eval', '.submissions', 'node_modules', '__pycache__', '.venv',
+      // Sandbox-private runtime dirs are host state, not submitted source.
+      '.tmp', '.home', '.cache', '.config', '.local', 'data', 'work',
+    ])
     let count = 0
     const walk = (dir: string): void => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -481,9 +517,91 @@ export class TaskService {
     return { ok: true, submission: id, files }
   }
 
-  private async runHostEval(workspaceId: string): Promise<Record<string, unknown>> {
+  /** Map an evaluator result that has no explicit stage (older evaluator builds). */
+  private inferStage(value: Record<string, unknown>, error: string): string {
+    if (value.infra_ok === true) return value.success === true ? 'completed' : 'scoring'
+    const text = error.toLowerCase()
+    if (text.includes('cmake') || text.includes('build')) return 'compile'
+    if (text.includes('infrastructure') || text.includes('operator') || text.includes('mre')) return 'infra'
+    if (text.includes('controller') || text.includes('torque')) return 'controller'
+    return 'simulation'
+  }
+
+  /** The target hold time used by the neural-pendulum scoring integral. */
+  private static readonly FINAL_T_TGT = 10
+
+  /** One test event's instantaneous score, mirroring the task specification. */
+  private static eventScore(event: Record<string, unknown>): number {
+    const stage = String(event['stage'] ?? '')
+    if (stage !== 'scoring' && stage !== 'completed' && event['valid'] !== true) return -1
+    const value = Number(event['t_can'] ?? 0)
+    if (!Number.isFinite(value)) return -1
+    return (Math.min(Math.max(value, 0), TaskService.FINAL_T_TGT) - TaskService.FINAL_T_TGT) / TaskService.FINAL_T_TGT
+  }
+
+  /**
+   * Host-side authoritative final score: integral of the per-test score over
+   * time, applying every test event at its REQUEST time and stopping at the
+   * first completed request. Mirrors neural-pendulum-eval/run_eval.py, but the
+   * host owns it because only the host knows the request timestamp and the
+   * current test's outcome before the next test arrives.
+   */
+  private static finalScoreFromEvents(
+    startedAt: number,
+    events: readonly Record<string, unknown>[],
+    now: number,
+  ): number {
+    const tests = events.filter(item => (item['event'] ?? item['type']) === 'test')
+    if (tests.length === 0) return -1 * Math.max(0, now - startedAt)
+    let doneAt: number | undefined
+    let previous = startedAt
+    let current = -1
+    let total = 0
+    for (const item of tests) {
+      const raw = Number(item['time'] ?? item['at'] ?? previous)
+      const at = Number.isFinite(raw) ? Math.max(raw, previous) : previous
+      total += current * (at - previous)
+      current = TaskService.eventScore(item)
+      previous = at
+      if (item['completed'] === true) {
+        doneAt = at
+        break
+      }
+    }
+    const end = doneAt ?? now
+    total += current * Math.max(0, end - previous)
+    return total
+  }
+
+  /** Read host test events; malformed lines are ignored. */
+  private readHostEvents(workspaceId: string): Record<string, unknown>[] {
+    const file = this.hostEvents(workspaceId)
+    if (!fs.existsSync(file)) return []
+    const out: Record<string, unknown>[] = []
+    for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+      if (line.trim() === '') continue
+      try {
+        const value = JSON.parse(line) as unknown
+        if (value !== null && typeof value === 'object' && !Array.isArray(value)) out.push(value as Record<string, unknown>)
+      } catch { /* skip corrupt line */ }
+    }
+    return out
+  }
+
+  /** The task start time recorded at first submission, falling back to the run creation time. */
+  private hostStartedAt(workspaceId: string, run: RunRecord): number {
+    try {
+      const meta = JSON.parse(fs.readFileSync(path.join(this.hostDir(workspaceId), 'meta.json'), 'utf8')) as { started_at?: unknown }
+      const value = Number(meta.started_at)
+      if (Number.isFinite(value) && value > 0) return value
+    } catch { /* fall through */ }
+    return run.createdAt / 1000
+  }
+
+  /** @param startedAtSeconds - task start in epoch seconds (from host meta). */
+  private async runHostEval(workspaceId: string, startedAtSeconds: number): Promise<Record<string, unknown>> {
     const latest = this.hostLatestSubmission(workspaceId)
-    if (latest === undefined) return { stage: 'no_submission', t_can: 0, completed: false, error: '' }
+    if (latest === undefined) return { stage: 'no_submission', t_can: 0, completed: false, error: '', final_score: 0 }
     const temp = fs.mkdtempSync(path.join(guardRoot(), 'pend-eval-'))
     try {
       const submissions = path.join(temp, '.eval', 'submissions')
@@ -491,28 +609,42 @@ export class TaskService {
       fs.cpSync(latest.path, path.join(submissions, latest.id), { recursive: true })
       const events = this.hostEvents(workspaceId)
       fs.writeFileSync(path.join(temp, '.eval', 'events.jsonl'), fs.existsSync(events) ? fs.readFileSync(events) : '', 'utf8')
-      fs.writeFileSync(path.join(temp, '.eval', 'meta.json'), JSON.stringify({ started_at: Date.now() / 1000, t_tgt: 10 }), 'utf8')
+      // The time integral starts at the first submission, not at each evaluation.
+      fs.writeFileSync(path.join(temp, '.eval', 'meta.json'), JSON.stringify({ started_at: startedAtSeconds, t_tgt: 10 }), 'utf8')
       const resultFile = path.join(temp, 'result.json')
       const script = path.join(packageRoot(), 'neural-pendulum-eval', 'run_eval.py')
-      const env = { ...process.env, EVAL_RESULT_FILE: resultFile, PYTHONPATH: '', PYTHONHOME: '' }
-      const child = spawn('python3', ['-X', 'utf8', script, '--workspace', temp], { env })
+      const env = { ...baseEnvironment(), EVAL_RESULT_FILE: resultFile }
+      // detached: true gives the evaluator its own process group so a timeout
+      // can take its build/control/simulator descendants down with it.
+      const child = spawn('python3', ['-X', 'utf8', script, '--workspace', temp], { env, detached: true })
       let stderr = ''
       child.stderr?.on('data', chunk => { stderr += String(chunk) })
+      let timedOut = false
       await new Promise<void>((resolve, reject) => {
-        child.on('error', reject)
-        child.on('close', () => resolve())
+        const timer = setTimeout(() => {
+          timedOut = true
+          try { if (child.pid !== undefined) process.kill(-child.pid, 'SIGKILL') } catch { /* already gone */ }
+          try { child.kill('SIGKILL') } catch { /* already gone */ }
+          resolve()
+        }, 20 * 60_000)
+        child.on('error', error => { clearTimeout(timer); reject(error) })
+        child.on('close', () => { clearTimeout(timer); resolve() })
       })
-      if (!fs.existsSync(resultFile)) return { stage: 'controller', t_can: 0, completed: false, error: stderr || 'evaluator failed' }
+      if (timedOut) return { stage: 'infra', t_can: 0, completed: false, error: 'evaluation timed out after 20 minutes', final_score: 0 }
+      if (!fs.existsSync(resultFile)) return { stage: 'infra', t_can: 0, completed: false, error: stderr || 'evaluator failed', final_score: 0 }
       const value = JSON.parse(fs.readFileSync(resultFile, 'utf8')) as Record<string, unknown>
       const error = String(value.error ?? '')
-      let stage = 'controller'
-      if (error.includes('cmake') || error.includes('build')) stage = 'compile'
-      else if (error.includes('selftest') || value.infra_ok === false) stage = 'infra'
-      else if (error.includes('controller')) stage = 'controller'
-      else if (value.success === true) stage = 'completed'
-      else if (value.infra_ok === true) stage = 'scoring'
-      else stage = 'simulation'
-      return { stage, t_can: Number(value.t_can ?? 0), completed: value.success === true, error }
+      const rawStage = String(value.stage ?? '')
+      const stage = rawStage !== '' ? rawStage : this.inferStage(value, error)
+      const tCan = Number(value.t_can ?? 0)
+      const finalScore = Number(value.final_score ?? 0)
+      return {
+        stage,
+        t_can: Number.isFinite(tCan) ? tCan : 0,
+        completed: stage === 'completed' && value.success === true,
+        error,
+        final_score: Number.isFinite(finalScore) ? finalScore : 0,
+      }
     } finally {
       fs.rmSync(temp, { recursive: true, force: true })
     }
@@ -522,39 +654,63 @@ export class TaskService {
   async hostTest(run: RunRecord): Promise<Record<string, unknown>> {
     const done = path.join(this.hostDir(run.workspaceId), 'done')
     if (fs.existsSync(done)) return { ok: false, stage: 'completed', error: 'task already completed' }
+    // The score changes at the REQUEST instant, not when the (possibly
+    // minutes-long) evaluation finishes.
+    const requestedAt = Date.now() / 1000
     const latest = this.hostLatestSubmission(run.workspaceId)
     if (latest === undefined) {
-      this.appendHostEvent(run.workspaceId, { event: 'test', time: Date.now() / 1000, submission_id: '',
+      this.appendHostEvent(run.workspaceId, { event: 'test', time: requestedAt, submission_id: '',
         stage: 'no_submission', t_can: 0, completed: false, error: '' })
       return { ok: true, stage: 'no_submission', t_can: 0, completed: false, error: '' }
     }
-    const value = await this.runHostEval(run.workspaceId)
+    const startedAt = this.hostStartedAt(run.workspaceId, run)
+    const value = await this.runHostEval(run.workspaceId, startedAt)
     const stage = String(value.stage ?? 'simulation')
     const tCan = Number(value.t_can ?? 0)
-    const completed = stage === 'completed' && Number.isFinite(tCan)
-    this.appendHostEvent(run.workspaceId, {
-      event: 'test', time: Date.now() / 1000, submission_id: latest.id,
+    const completed = stage === 'completed' && Number.isFinite(tCan) && tCan >= 10
+    const event: Record<string, unknown> = {
+      event: 'test', time: requestedAt, submission_id: latest.id,
       stage, t_can: tCan, completed, error: String(value.error ?? ''),
-    })
-    if (completed) fs.writeFileSync(done, String(Date.now() / 1000), 'utf8')
+    }
+    // The evaluator only sees the events written before this test, so its
+    // final_score omits the current outcome. Recompute the integral with the
+    // current test event included; this is the value the ranking stores.
+    const finalScore = TaskService.finalScoreFromEvents(
+      startedAt,
+      [...this.readHostEvents(run.workspaceId), event],
+      Date.now() / 1000,
+    )
+    event['final_score'] = finalScore
+    this.appendHostEvent(run.workspaceId, event)
+    if (completed) {
+      fs.writeFileSync(done, JSON.stringify({ at: requestedAt, stage, t_can: tCan, final_score: finalScore }) + '\n', 'utf8')
+    }
     return { ok: true, stage, t_can: tCan, completed, error: String(value.error ?? '') }
   }
 
   /** Build a temporary workspace containing the host-side authoritative state. */
   stageHostWorkspace(workspaceId: string): string | undefined {
+    // Only the latest snapshot is staged: copying every submission makes the
+    // evaluator's mtime-based "latest" pick ambiguous (cpSync does not
+    // preserve timestamps).
     const latest = this.hostLatestSubmission(workspaceId)
     if (latest === undefined) return undefined
     const temp = fs.mkdtempSync(path.join(guardRoot(), 'pend-eval-view-'))
     const state = path.join(temp, '.eval')
     fs.mkdirSync(path.join(state, 'submissions'), { recursive: true })
-    const root = path.join(this.hostDir(workspaceId), 'submissions')
-    for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-      if (entry.isDirectory()) fs.cpSync(path.join(root, entry.name), path.join(state, 'submissions', entry.name), { recursive: true })
-    }
+    fs.cpSync(latest.path, path.join(state, 'submissions', latest.id), { recursive: true })
     const events = this.hostEvents(workspaceId)
     fs.writeFileSync(path.join(state, 'events.jsonl'), fs.existsSync(events) ? fs.readFileSync(events) : '', 'utf8')
     const meta = path.join(this.hostDir(workspaceId), 'meta.json')
-    fs.writeFileSync(path.join(state, 'meta.json'), fs.existsSync(meta) ? fs.readFileSync(meta) : JSON.stringify({ started_at: Date.now() / 1000, t_tgt: 10 }), 'utf8')
+    let fallbackStart = Date.now() / 1000
+    try {
+      for (const line of (fs.existsSync(events) ? fs.readFileSync(events, 'utf8') : '').split('\n')) {
+        if (line.trim() === '') continue
+        const time = Number((JSON.parse(line) as { time?: number }).time)
+        if (Number.isFinite(time) && time > 0) { fallbackStart = time; break }
+      }
+    } catch { /* keep now */ }
+    fs.writeFileSync(path.join(state, 'meta.json'), fs.existsSync(meta) ? fs.readFileSync(meta) : JSON.stringify({ started_at: fallbackStart, t_tgt: 10 }), 'utf8')
     return temp
   }
 
@@ -615,6 +771,59 @@ export class TaskService {
     return PIP_MIRRORS.find(item => item.id === index)?.url ?? 'https://pypi.org/simple'
   }
 
+  /** Host-side pristine material for one workspace (tests, venv manifest). */
+  baselineDir(workspaceId: string): string {
+    return path.join(guardRoot(), 'task-baseline', workspaceId.replace(/[^A-Za-z0-9_.-]/g, '_'))
+  }
+
+  /**
+   * Snapshot the test material a benchmark task ships with, so an agent cannot
+   * pass by editing or weakening the tests. Runs once after a successful
+   * install; the evaluator restores it before scoring.
+   */
+  private snapshotTestMaterial(definition: TaskDefinition, workspaceId: string, workspacePath: string): void {
+    const names = definition.testMaterial ?? []
+    if (names.length === 0) return
+    const target = this.baselineDir(workspaceId)
+    fs.mkdirSync(target, { recursive: true })
+    for (const name of names) {
+      const source = path.join(workspacePath, name)
+      if (!fs.existsSync(source)) continue
+      const destination = path.join(target, name)
+      fs.rmSync(destination, { recursive: true, force: true })
+      fs.cpSync(source, destination, { recursive: true, dereference: false })
+    }
+    fs.writeFileSync(path.join(target, 'manifest.json'), JSON.stringify({ task: definition.id, names }, null, 2) + '\n', 'utf8')
+  }
+
+  /**
+   * Record a fingerprint of the venv's control plane (python target, pyvenv.cfg,
+   * .pth files, pytest packages). The evaluator refuses to trust a venv whose
+   * fingerprint no longer matches, which closes the "replace bin/python or
+   * patch pytest" forgery path.
+   */
+  private snapshotVenv(workspaceId: string, workspacePath: string): void {
+    const venv = path.join(workspacePath, '.venv')
+    if (!fs.existsSync(venv)) return
+    const target = this.baselineDir(workspaceId)
+    fs.mkdirSync(target, { recursive: true })
+    const manifest: { python?: string; files: Record<string, string>; pytest?: string } = { files: {} }
+    const python = path.join(venv, 'bin', 'python')
+    try { manifest.python = fs.realpathSync.native(python) } catch { /* missing */ }
+    const cfg = path.join(venv, 'pyvenv.cfg')
+    if (fs.existsSync(cfg)) manifest.files['pyvenv.cfg'] = sha256File(cfg)
+    for (const site of sitePackageDirs(venv)) {
+      for (const entry of fs.readdirSync(site, { withFileTypes: true })) {
+        if (!entry.isFile() || !entry.name.endsWith('.pth')) continue
+        const file = path.join(site, entry.name)
+        manifest.files[path.relative(venv, file)] = sha256File(file)
+      }
+      const pytest = path.join(site, 'pytest')
+      if (fs.existsSync(pytest)) manifest.pytest = sha256Tree(pytest)
+    }
+    fs.writeFileSync(path.join(target, 'venv.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8')
+  }
+
   /** Check one workspace before install. */
   check(workspaceId: string): CheckResult {
     const workspace = this.registry.get(workspaceId)
@@ -656,6 +865,7 @@ export class TaskService {
   /** Remove install-only artifacts so they are not part of the agent workspace. */
   private cleanupWorkspace(workspacePath: string): void {
     for (const name of ['.git', '.repo', 'setup.sh', 'remove.patch', 'spec.pdf.bz2', 'cifar_cache.py']) {
+      // setup.sh removes spec.pdf.bz2 itself when present; keep spec.pdf as task material.
       try { fs.rmSync(path.join(workspacePath, name), { recursive: true, force: true }) } catch { /* best effort */ }
     }
   }
@@ -671,7 +881,7 @@ export class TaskService {
 
   /** Remove the shared CIFAR lock only when it belongs to this install. */
   private cleanupCifarLock(token: string): void {
-    const lock = path.join(os.homedir(), '.dsh', 'eval-guard', 'cache', 'cifar10', '.download.lock')
+    const lock = path.join(dshHome(), 'eval-guard', 'cache', 'cifar10', '.download.lock')
     try {
       if (!fs.existsSync(lock)) return
       const body = fs.readFileSync(lock, 'utf8')
@@ -716,10 +926,16 @@ export class TaskService {
     const command = definition.needsSetup ? ['bash', 'setup.sh'] : ['bash', '-c', 'true']
     const job = this.jobs.start({
       kind: 'install', task: taskId, workspaceId, command, cwd: checked.path, env,
+      cleanupWorkspace: checked.path,
+      cifarToken: installToken,
       onCancel: cleanupInstall,
       onFailure: cleanupInstall,
       onSuccess: () => {
         if (definition.needsSetup) this.cleanupWorkspace(checked.path)
+        try {
+          this.snapshotTestMaterial(definition, workspaceId, checked.path)
+          this.snapshotVenv(workspaceId, checked.path)
+        } catch { /* pristine snapshots are best effort; the evaluator reports a missing baseline */ }
         const prompt = this.promptNotice(this.guard.promptFor(checked.path, this.materialZip(taskId), definition))
         return { prompt }
       },
@@ -739,6 +955,12 @@ export class TaskService {
     if (!fs.existsSync(script)) return { ok: false, error: '评测脚本不存在：' + script }
     const hostView = taskId === NEURAL_PENDULUM_TASK ? this.stageHostWorkspace(workspaceId) : undefined
     const evalWorkspace = hostView ?? checked.path
+    const cleanupHostView = (): void => {
+      if (hostView === undefined) return
+      try { fs.rmSync(hostView, { recursive: true, force: true }) } catch { /* best effort */ }
+    }
+    const baseline = this.baselineDir(workspaceId)
+    const baselineEnv: Record<string, string> = fs.existsSync(baseline) ? { EVAL_BASELINE_DIR: baseline } : {}
     const job = this.jobs.start({
       kind: 'eval', task: taskId, workspaceId,
       command: ['python3', '-X', 'utf8', script, '--workspace', evalWorkspace],
@@ -747,9 +969,16 @@ export class TaskService {
         PYTHONPATH: '', PYTHONHOME: '',
         EVAL_CIFAR_PROXY: this.proxyValue(this.guard.configuration.cifarProxyUrl),
         EVAL_CIFAR_URL: this.cifarUrl(this.guard.configuration),
-        EVAL_SUBMISSIONS_ROOT: path.join(guardRoot(), 'submissions', workspaceId.replace(/[^A-Za-z0-9_.-]/g, '_')),
+        ...baselineEnv,
       },
+      onSuccess: cleanupHostView,
+      onCancel: cleanupHostView,
+      onFailure: cleanupHostView,
     })
+    if (job.status === 'failed') {
+      cleanupHostView()
+      return { ok: false, error: job.error ?? '评测启动失败' }
+    }
     return { ok: true, jobId: job.id }
   }
 
@@ -777,31 +1006,6 @@ export class TaskService {
     }
     if (stale) fs.copyFileSync(source, target)
     return target
-  }
-
-  /** Install the selected task pack into an empty workspace. */
-  install(workspaceId: string, taskId: string = TANK_TASK, promptOverride?: string): InstallResult {
-    const definition = TASK_DEFINITIONS[taskId]
-    if (definition === undefined) return { ok: false, workspaceId, error: '未知任务：' + taskId }
-    const checked = this.check(workspaceId)
-    if (!checked.ok) return { ok: false, error: checked.error, workspaceId }
-    if (!checked.empty) {
-      return { ok: false, workspaceId, workspacePath: checked.path, error: '工作区不是空的；未执行任何操作。请换一个空工作区，或按手动通道处理。' }
-    }
-    if (!this.guard.active) {
-      return { ok: false, workspaceId, workspacePath: checked.path, error: '请先启用评测守护，再安装评测任务。' }
-    }
-    try {
-      fs.copyFileSync(this.materialZip(taskId), path.join(checked.path, 'workspace.zip'))
-      if (definition.needsSetup) this.extractMaterial(checked.path)
-      if (definition.prepare !== undefined) definition.prepare(checked.path)
-      if (definition.needsSetup) this.cleanupWorkspace(checked.path)
-    } catch (error: unknown) {
-      if (checked.empty) this.wipeInstallWorkspace(checked.path)
-      return { ok: false, workspaceId, workspacePath: checked.path, error: '任务准备失败：' + (error instanceof Error ? error.message : String(error)) }
-    }
-    const prompt = this.promptNotice(promptOverride ?? this.guard.promptFor(checked.path, this.materialZip(taskId), definition))
-    return { ok: true, workspaceId, workspacePath: checked.path, prompt }
   }
 
   /** The prompt for manual copying, without installing anything. */

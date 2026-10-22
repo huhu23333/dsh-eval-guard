@@ -112,20 +112,23 @@ def main() -> int:
     if melee == 0:
         cmd += ["--only", "duel"]
     print("tier=%s maps=%d melee=%d entries=%d" % (args.tier, maps, melee, len(list(entries.iterdir()))), flush=True)
-    completed = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    completed = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800)
     if completed.returncode != 0:
         print(completed.stdout[-4000:], completed.stderr[-4000:], file=sys.stderr)
         return 2
     ratings_prefix = out / "ratings"
     rate = subprocess.run([sys.executable, "-X", "utf8", str(task / "tournament" / "rate.py"), str(results_jsonl),
                            "--entries", str(entries), "--out", str(ratings_prefix)], capture_output=True, text=True,
-                          encoding="utf-8", errors="replace")
+                          encoding="utf-8", errors="replace", timeout=1800)
     if rate.returncode != 0:
         print(rate.stdout[-4000:], rate.stderr[-4000:], file=sys.stderr)
         return 2
     ratings = load_json(Path(str(ratings_prefix) + ".json")) or {}
+    if ratings.get("unavailable"):
+        print("land rating unavailable: " + str(ratings.get("unavailable")), file=sys.stderr)
+        return 2
     models = ratings.get("models", {})
-    prices = load_json(ROOT / "prices.json") or {}
+    prices = load_json(ROOT / "land-prices.json") or load_json(ROOT / "prices.json") or {}
 
     rows = []
     all_names = list(names) + [name for name in models if name not in names]

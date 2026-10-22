@@ -15,15 +15,12 @@ import sys
 import tempfile
 from pathlib import Path
 
-from common import EVAL_ROOT, clean_copy, emit, fail, parse_workspace
+from common import EVAL_ROOT, child_env, clean_copy, emit, fail, parse_workspace
 
 
 def run(cmd: list[str], cwd: Path, timeout: int = 600) -> subprocess.CompletedProcess[str]:
-    env = dict(os.environ)
-    env.pop('PYTHONPATH', None)
-    env.pop('PYTHONHOME', None)
     return subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
-                          encoding='utf-8', errors='replace', env=env, timeout=timeout)
+                          encoding='utf-8', errors='replace', env=child_env(), timeout=timeout)
 
 
 def main() -> int:
@@ -31,6 +28,9 @@ def main() -> int:
     hidden = EVAL_ROOT.parent / 'assets' / 'neural-cpp' / 'hidden' / 'test_neural.cpp'
     if not hidden.is_file():
         return fail({'task': 'neural-cpp', 'ok': False, 'error': 'hidden test missing'})
+    # Snapshot the hidden test BEFORE the candidate build runs: an agent-authored
+    # CMakeLists can otherwise overwrite the asset and substitute a passing test.
+    hidden_source = hidden.read_bytes()
 
     with tempfile.TemporaryDirectory(prefix='neural-cpp-eval-') as td:
         root = Path(td)
@@ -67,9 +67,12 @@ def main() -> int:
         if not lib.is_file():
             return fail({'task': 'neural-cpp', 'ok': False, 'error': 'build/libnn.a missing'})
 
+        # Compile the in-memory snapshot, not the on-disk asset the build could edit.
+        hidden_copy = root / 'test_neural.cpp'
+        hidden_copy.write_bytes(hidden_source)
         exe = root / 'test_neural'
         cc = run([compiler, '-std=c++17', '-O3', '-pthread',
-                  '-I', str(source / 'include'), str(hidden), str(lib),
+                  '-I', str(source / 'include'), str(hidden_copy), str(lib),
                   '-lm', '-o', str(exe)], root, 300)
         if cc.returncode != 0:
             return fail({'task': 'neural-cpp', 'ok': False, 'error': 'hidden test compile failed',

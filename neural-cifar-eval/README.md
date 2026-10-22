@@ -55,3 +55,8 @@ gate. The 4-thread 0.02 s/image requirement is reported as
 - PyTorch is required on the evaluation machine for the operator oracle.
 - The 4-thread and all-thread model runs use the same trained model.
 - The validation data and labels never enter the candidate workspace.
+- The label file is read into the evaluator's memory; `infer` receives a copy of the
+  images in an isolated temporary directory, so it cannot derive the labels path
+  from its `--images` argument. Candidate/spawned processes also lose the host
+  `EVAL_*` handle variables.
+- FPS and mean seconds/image include process startup and model loading.

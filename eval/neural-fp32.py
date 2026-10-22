@@ -20,7 +20,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from common import EVAL_ROOT, clean_copy, emit, fail, parse_workspace
+from common import EVAL_ROOT, child_env, clean_copy, emit, fail, parse_workspace
 
 torch.set_num_threads(1)
 torch.set_float32_matmul_precision('highest')
@@ -29,6 +29,9 @@ torch.backends.mkldnn.deterministic = True
 torch.manual_seed(1234)
 
 SEEDS = (11, 22, 33)
+# A single CLI invocation budget and a total budget for the whole oracle run.
+INVOCATION_TIMEOUT_SECONDS = 60
+OPS_DEADLINE_SECONDS = 1800
 
 
 def write_tensor(path: Path, t: torch.Tensor) -> None:
@@ -65,11 +68,12 @@ def build_candidate(workspace: Path, root: Path) -> Path:
         shutil.rmtree(build, ignore_errors=True)
     build.mkdir(parents=True)
     cfg = subprocess.run(['cmake', '-S', '.', '-B', 'build', '-DCMAKE_BUILD_TYPE=Release'],
-                         cwd=str(source), capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=180)
+                         cwd=str(source), capture_output=True, text=True, encoding='utf-8', errors='replace',
+                         timeout=180, env=child_env())
     if cfg.returncode != 0:
         raise RuntimeError('cmake configure failed\n' + (cfg.stdout + cfg.stderr)[-4000:])
     made = subprocess.run(['cmake', '--build', 'build', '-j4'], cwd=str(source), capture_output=True,
-                          text=True, encoding='utf-8', errors='replace', timeout=1800)
+                          text=True, encoding='utf-8', errors='replace', timeout=1800, env=child_env())
     if made.returncode != 0:
         raise RuntimeError('build failed\n' + (made.stdout + made.stderr)[-4000:])
     binary = build / 'nn_task'
@@ -87,7 +91,8 @@ class Case:
         self.flops = flops
 
 
-def run_operation(name: str, threshold: float, cases: list[Case], binary: Path, root: Path) -> dict:
+def run_operation(name: str, threshold: float, cases: list[Case], binary: Path, root: Path,
+                  invocation_timeout: float = INVOCATION_TIMEOUT_SECONDS) -> dict:
     op_dir = root / 'ops' / name
     op_dir.mkdir(parents=True, exist_ok=True)
     executable = True
@@ -111,7 +116,8 @@ def run_operation(name: str, threshold: float, cases: list[Case], binary: Path, 
         started = time.perf_counter()
         try:
             proc = subprocess.run(cmd, cwd=str(case_dir), capture_output=True, text=True,
-                                  encoding='utf-8', errors='replace', timeout=300)
+                                  encoding='utf-8', errors='replace', timeout=invocation_timeout,
+                                  env=child_env())
         except subprocess.TimeoutExpired:
             executable = False
             first_error = first_error or 'timeout'
@@ -459,7 +465,13 @@ def main() -> int:
         except Exception as exc:
             return fail({'task': 'neural-fp32', 'ok': False, 'error': str(exc)})
         rows = []
+        deadline = time.monotonic() + OPS_DEADLINE_SECONDS
         for name, threshold, builder in OPERATIONS:
+            if time.monotonic() > deadline:
+                rows.append({'name': name, 'executable': False, 'passed': False,
+                             'weighted_mean_relative_error': None, 'threshold': threshold,
+                             'speed_gflops': None, 'error': 'evaluation deadline exceeded'})
+                continue
             try:
                 cases = builder()
                 row = run_operation(name, threshold, cases, binary, root)

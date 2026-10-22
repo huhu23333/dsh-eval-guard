@@ -17,4 +17,20 @@ with tempfile.TemporaryDirectory(prefix='warehouse-eval-') as td:
     if not result.get('ok'):
         raise SystemExit(fail({'task': 'warehouse', 'ok': False, 'error': result.get('error', 'evaluation failed')}))
     row = candidate_row(result['summary'])
-    emit({'task': 'warehouse', 'ok': True, 'score': row.get('speedup', 0), 'speedup': row.get('speedup', 0), 'correct': row.get('correct'), 'status': row.get('status')})
+    if not row:
+        raise SystemExit(fail({'task': 'warehouse', 'ok': False, 'error': 'candidate row missing from evaluator summary'}))
+    compile_error = row.get('compileError') or ''
+    correct = row.get('correct', 0)
+    total = row.get('total', 0)
+    status = 'compile-failed' if compile_error else ('ok' if correct == total and total else 'incorrect')
+    emit({
+        'task': 'warehouse',
+        'ok': True,
+        'score': row.get('score', 0),
+        'speedup': row.get('geomeanSpeedup', 0),
+        'geomeanSpeedup': row.get('geomeanSpeedup', 0),
+        'correct': correct,
+        'total': total,
+        'status': status,
+        'error': compile_error,
+    })

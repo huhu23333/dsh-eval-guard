@@ -12,6 +12,10 @@ interface StartOptions {
   command: string[]
   cwd: string
   env?: Record<string, string>
+  /** Install-only: workspace that must be wiped if the host restarts mid-install. */
+  cleanupWorkspace?: string
+  /** Install-only: CIFAR download-lock token owned by this install. */
+  cifarToken?: string
   onSuccess?: (job: JobDetail) => { prompt?: string; runId?: string; result?: unknown } | void
   onCancel?: (job: JobDetail) => void
   onFailure?: (job: JobDetail) => void
@@ -25,6 +29,33 @@ interface Stored extends JobInfo {
   prompt?: string
   runId?: string
   result?: unknown
+  pid?: number
+  /** Linux /proc/<pid>/stat starttime, used to avoid killing a reused PID after a restart. */
+  pidStartTime?: string
+  cleanupWorkspace?: string
+  cifarToken?: string
+}
+
+/**
+ * The only host environment variables a setup/evaluation child inherits.
+ *
+ * Evaluation children execute agent-authored build scripts and binaries, so
+ * the ambient DSH environment (credentials, session secrets, proxy settings)
+ * must not leak into them. Everything the task needs is passed explicitly via
+ * the EVAL_* variables in StartOptions.env.
+ */
+export function baseEnvironment(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const keep = [
+    'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'LANG', 'LANGUAGE', 'LC_ALL', 'LC_CTYPE',
+    'LC_MESSAGES', 'TZ', 'TERM', 'TMPDIR', 'TMP', 'TEMP', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+    'GIT_SSL_CAINFO', 'REQUESTS_CA_BUNDLE', 'CURL_CA_BUNDLE', 'NODE_EXTRA_CA_CERTS',
+  ]
+  const env: Record<string, string> = {}
+  for (const key of keep) {
+    const value = source[key]
+    if (value !== undefined) env[key] = value
+  }
+  return env
 }
 
 function now(): number { return Date.now() }
@@ -46,13 +77,75 @@ export class JobManager {
       try {
         const stored = JSON.parse(fs.readFileSync(file, 'utf8')) as Stored
         if (stored.status === 'running' || stored.status === 'queued') {
+          // The host restarted while a child was live. The job can no longer
+          // be observed, so kill its process group instead of leaving an
+          // orphaned (and unguarded) setup/evaluation process behind. Verify
+          // the PID still belongs to that incarnation: a restart can easily
+          // have reused the number.
+          if (typeof stored.pid === 'number' && stored.pid > 0 && this.stillOurProcess(stored)) {
+            try { process.kill(-stored.pid, 'SIGTERM') } catch {
+              try { process.kill(stored.pid, 'SIGTERM') } catch { /* already gone */ }
+            }
+          }
           stored.status = 'interrupted'
           stored.error = '服务重启，任务已中断'
           stored.endedAt = now()
           this.write(stored)
+          // A restart can leave a half-installed workspace behind, which then
+          // blocks re-install with "workspace not empty". startInstall only
+          // ever runs in an initially empty workspace, so wiping the recorded
+          // install directory is safe.
+          if (stored.kind === 'install' && stored.cleanupWorkspace !== undefined) {
+            this.wipeInstallWorkspace(stored.cleanupWorkspace)
+            if (stored.cifarToken !== undefined) this.cleanupCifarLock(stored.cifarToken)
+          }
         }
         this.jobs.set(stored.id, stored)
       } catch { /* ignore corrupt job */ }
+    }
+  }
+
+  /** Remove every top-level entry an interrupted install could have created. */
+  private wipeInstallWorkspace(workspacePath: string): void {
+    try {
+      for (const entry of fs.readdirSync(workspacePath)) {
+        fs.rmSync(path.join(workspacePath, entry), { recursive: true, force: true })
+      }
+    } catch { /* best effort */ }
+  }
+
+  /** Remove the CIFAR lock only when it carries this install's token. */
+  private cleanupCifarLock(token: string): void {
+    try {
+      const lock = path.join(guardRoot(), 'cache', 'cifar10', '.download.lock')
+      if (fs.existsSync(lock) && fs.readFileSync(lock, 'utf8').includes('token=' + token)) fs.rmSync(lock, { force: true })
+    } catch { /* best effort */ }
+  }
+
+  /** Read the Linux process start time from /proc/<pid>/stat (field 22). */
+  private processStartTime(pid: number): string | undefined {
+    try {
+      const stat = fs.readFileSync('/proc/' + String(pid) + '/stat', 'utf8')
+      const end = stat.lastIndexOf(')')
+      if (end < 0) return undefined
+      const fields = stat.slice(end + 2).trim().split(/\s+/)
+      return fields[19]
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Whether a persisted PID still names the process this job started. */
+  private stillOurProcess(stored: Stored): boolean {
+    if (stored.pidStartTime !== undefined && this.processStartTime(stored.pid!) !== stored.pidStartTime) return false
+    if (stored.pidStartTime !== undefined) return true
+    // Older job records predate pidStartTime; fall back to argv[0] matching.
+    try {
+      const argv = fs.readFileSync('/proc/' + String(stored.pid) + '/cmdline', 'utf8').split('\0').filter(Boolean)
+      if (argv.length === 0) return false
+      return path.basename(argv[0]!) === path.basename(stored.command[0] ?? '')
+    } catch {
+      return false
     }
   }
 
@@ -73,6 +166,8 @@ export class JobManager {
       id: jobId, kind: options.kind, task: options.task, workspaceId: options.workspaceId,
       status: 'running', createdAt: now(), startedAt: now(), endedAt: null, updatedAt: now(),
       command: options.command, cwd: options.cwd, logFile, resultFile: path.join(directory, 'result.json'),
+      ...options.cleanupWorkspace === undefined ? {} : { cleanupWorkspace: options.cleanupWorkspace },
+      ...options.cifarToken === undefined ? {} : { cifarToken: options.cifarToken },
     }
     this.jobs.set(jobId, job)
     this.write(job)
@@ -80,7 +175,13 @@ export class JobManager {
     try {
       child = spawn(options.command[0]!, options.command.slice(1), {
         cwd: options.cwd,
-        env: { ...process.env, ...(options.env ?? {}), PYTHONUNBUFFERED: '1', EVAL_JOB_DIR: directory, EVAL_RESULT_FILE: job.resultFile },
+        env: {
+          ...baseEnvironment(),
+          ...(options.env ?? {}),
+          PYTHONUNBUFFERED: '1',
+          EVAL_JOB_DIR: directory,
+          EVAL_RESULT_FILE: job.resultFile,
+        },
         detached: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
@@ -91,19 +192,37 @@ export class JobManager {
       return this.info(job)
     }
     this.children.set(jobId, child)
+    if (child.pid !== undefined) {
+      job.pid = child.pid
+      job.pidStartTime = this.processStartTime(child.pid)
+      this.write(job)
+    }
     if (options.onCancel !== undefined) this.cancelHandlers.set(jobId, options.onCancel)
     const append = (chunk: Buffer): void => {
       try { fs.appendFileSync(logFile, chunk) } catch { /* log write must not crash the host */ }
     }
     child.stdout?.on('data', (chunk: Buffer) => append(chunk))
     child.stderr?.on('data', (chunk: Buffer) => append(chunk))
+    let failureNotified = false
+    const fail = (error: string): void => {
+      if (job.status !== 'running' && job.status !== 'queued') return
+      job.status = 'failed'
+      job.error = error
+      job.endedAt = now(); job.updatedAt = now()
+      this.write(job)
+      if (failureNotified) return
+      failureNotified = true
+      try { options.onFailure?.(this.detail(jobId)) } catch { /* failure cleanup is best effort */ }
+    }
     child.on('error', (error: Error) => {
-      job.status = 'failed'; job.error = error.message; job.endedAt = now(); job.updatedAt = now(); this.write(job)
+      this.children.delete(jobId)
+      this.cancelHandlers.delete(jobId)
+      fail(error.message)
     })
     child.on('exit', (code, signal) => {
       this.children.delete(jobId)
       this.cancelHandlers.delete(jobId)
-      if (job.status === 'cancelled') return
+      if (job.status === 'cancelled' || job.status === 'failed') return
       if (code === 0) {
         try {
           const extra = options.onSuccess?.(this.detail(jobId))
@@ -122,12 +241,13 @@ export class JobManager {
         } catch (error) {
           job.status = 'failed'
           job.error = error instanceof Error ? error.message : String(error)
-          try { options.onFailure?.(this.detail(jobId)) } catch { /* failure cleanup is best effort */ }
+          if (!failureNotified) {
+            failureNotified = true
+            try { options.onFailure?.(this.detail(jobId)) } catch { /* failure cleanup is best effort */ }
+          }
         }
       } else {
-        job.status = 'failed'
-        job.error = signal !== null ? '进程被信号 ' + signal + ' 终止' : '退出码 ' + String(code)
-        try { options.onFailure?.(this.detail(jobId)) } catch { /* failure cleanup is best effort */ }
+        fail(signal !== null ? '进程被信号 ' + signal + ' 终止' : '退出码 ' + String(code))
       }
       job.endedAt = now(); job.updatedAt = now(); this.write(job)
     })

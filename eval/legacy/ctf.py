@@ -123,14 +123,17 @@ def main() -> int:
     print("tier=%s sizes=%s maps=%d players=%d" % (args.tier, sizes, maps_per_size, len(players)), flush=True)
     for step in steps:
         completed = subprocess.run([sys.executable, "-X", "utf8", tournament, *step], capture_output=True, text=True,
-                                   encoding="utf-8", errors="replace")
+                                   encoding="utf-8", errors="replace", timeout=1800)
         if completed.returncode != 0:
             print(completed.stdout[-4000:], completed.stderr[-4000:], file=sys.stderr)
             return 2
     scores = load_json(games_dir / "成绩.json") or {}
+    if scores.get("unavailable"):
+        print("ctf rating unavailable: " + str(scores.get("unavailable")), file=sys.stderr)
+        return 2
     raw_ratings = scores.get("ratings", {})
     ratings = {name: (value[0] if isinstance(value, list) and value else value) for name, value in raw_ratings.items()}
-    prices = load_json(ROOT / "prices.json") or {}
+    prices = load_json(ROOT / "ctf-prices.json") or load_json(ROOT / "prices.json") or {}
 
     rows = []
     for name, program in players.items():
