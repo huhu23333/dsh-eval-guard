@@ -3,8 +3,9 @@
  *
  * Installs a seccomp user-notification filter before exec'ing bwrap and enforces
  * a path policy on file-access and network syscalls. Normal syscalls are not
- * logged; only denied operations are appended to the audit file and cause the
- * whole process group to be killed.
+ * logged. File-policy violations are audited and kill the process group;
+ * AF_INET/AF_INET6 connect/bind/sendto are audited and soft-denied with EPERM
+ * so local software checks (pip version probe, NSS fallback) can continue.
  *
  * Usage:
  *   dsh-eval-supervisor --policy <policy-file> --audit <audit-file> -- <program> [args...]
@@ -87,6 +88,7 @@ static int g_dev_count;
 static Rule g_rules[MAX_RULES];
 static int g_rule_count;
 static int g_audit_fd = -1;
+static int g_soft_deny; /* network-family denial: EPERM, do not kill the group */
 static volatile sig_atomic_t g_stop;
 /* The sandbox mounted a private tmpfs at /tmp (workspace under host /tmp). */
 static int g_tmpfs_tmp;
@@ -555,6 +557,7 @@ static int check_notification(pid_t pid, const struct seccomp_notif *req, int *w
 
   path_out[0] = '\0';
   g_current_pid = pid;
+  g_soft_deny = 0;
   if (nr == SYS_execve || nr == SYS_execveat) {
     char executable[MAX_PATH];
     executable[0] = '\0';
@@ -567,20 +570,43 @@ static int check_notification(pid_t pid, const struct seccomp_notif *req, int *w
     return 1;
   }
   if (nr == SYS_socket) {
-    int domain = (int)a0;
+    /* Creating a socket does not transmit anything. bwrap already put the
+     * command in a private network namespace; tools such as pip create an
+     * AF_INET socket for local/version checks without connecting. All the
+     * operations that can actually reach a peer (connect/bind/listen/accept/
+     * sendto/recvfrom) remain denied below. */
     *write_access = 0;
     snprintf(path_out, MAX_PATH, "<network:socket>");
-    /* AF_UNIX/AF_NETLINK stay inside the private network namespace and are
-     * needed by NSS, Python and the dynamic loader. AF_INET/AF_INET6 and raw
-     * sockets are still blocked. */
-    if (domain == AF_UNIX || domain == AF_NETLINK) return 1;
-    return 0;
+    return 1;
   }
   if (is_network_syscall(nr)) {
     *write_access = 0;
     snprintf(path_out, MAX_PATH, "<network:%s>", syscall_name(nr));
-    /* Only AF_UNIX/AF_NETLINK sockets can exist now; their traffic is local
-     * to the private namespace and cannot reach the host network. */
+    /* bwrap itself needs AF_UNIX bind/listen/connect while it sets up the
+     * namespace; only the target's traffic is checked. */
+    if (!g_command_started || (g_current_pid > 0 && is_bwrap(g_current_pid))) return 1;
+    if (nr == SYS_listen || nr == SYS_accept || nr == SYS_accept4 || nr == SYS_recvfrom) {
+      /* No peer can appear outside the private netns; these operate on an
+       * already-authorized local socket. */
+      return 1;
+    }
+    if (nr == SYS_connect || nr == SYS_bind || nr == SYS_sendto) {
+      unsigned long addr_ptr = nr == SYS_sendto ? (unsigned long)req->data.args[4] : a1;
+      unsigned short family = 0;
+      if (addr_ptr != 0 && read_remote(pid, addr_ptr, &family, sizeof(family)) == 0) {
+        if (family == AF_UNIX || family == AF_NETLINK) return 1;
+        if (family == AF_INET || family == AF_INET6) {
+          /* A version check or NSS probe may create the socket and attempt a
+           * connection; return EPERM instead of killing the whole group. The
+           * private netns is the hard boundary; this is the graceful denial. */
+          g_soft_deny = 1;
+          snprintf(path_out, MAX_PATH, "<network:%s:inet>", syscall_name(nr));
+          return 0;
+        }
+      }
+      g_soft_deny = 1;
+      return 0;
+    }
     return 1;
   }
   if (nr == SYS_io_uring_setup || nr == SYS_ptrace || nr == SYS_open_by_handle_at) {
@@ -817,6 +843,12 @@ static void reply_loop(int fd) {
         char syscall_buf[64];
         snprintf(syscall_buf, sizeof(syscall_buf), "%s", syscall_name((long)req.data.nr));
         audit_record((pid_t)req.pid, syscall_buf, path, write_access);
+        if (g_soft_deny) {
+          /* A software check (pip version probe, NSS lookup fallback) gets a
+           * normal EPERM and can continue; file-policy violations still kill. */
+          respond(fd, &req, 0);
+          continue;
+        }
         /* io_uring is a soft denial: libuv probes it despite UV_USE_IO_URING=0
          * and must receive EPERM and fall back to epoll instead of taking the
          * whole command group down. No io_uring instance can exist, so the

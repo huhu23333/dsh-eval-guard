@@ -65,7 +65,13 @@ static void deriv(const State& s, const std::array<double,N>& tau, State& out) {
   std::array<double,N> C{}, G{}, Q{}, rhs{};
   for(int i=0;i<N;i++){
     double ci=0;
-    for(int j=0;j<N;j++) if(j!=i) ci += M[i][j] * std::sin(s.theta[i]-s.theta[j]) * s.omega[j]*s.omega[j];
+    for(int j=0;j<N;j++) if(j!=i) {
+      // Coriolis coefficient: d(M_ij)/d(theta_j) = LEN[min] * GCOEF[max] * sin(...);
+      // M_ij itself already contains cos(...), so multiplying M_ij by sin would
+      // add an extra cos factor and inject energy at high speed (NaN after ~7 s).
+      const int a=std::min(i,j), b=std::max(i,j);
+      ci += LEN[a] * GCOEF[b] * std::sin(s.theta[i]-s.theta[j]) * s.omega[j]*s.omega[j];
+    }
     C[i]=ci;
     G[i]=GRAV*std::sin(s.theta[i])*GCOEF[i];
   }
@@ -101,7 +107,12 @@ int main(int argc, char** argv) {
       // parse torque array
       double u1=0,u3=0; auto p=line.find('['); if(p!=std::string::npos){ char* end=nullptr; u1=std::strtod(line.c_str()+p+1,&end); if(end){ const char* q=end; while(*q && (*q==','||*q==' ')) q++; u3=std::strtod(q,&end); } }
       u1=std::max(-1.0,std::min(1.0,u1)); u3=std::max(-1.0,std::min(1.0,u3));
-      std::array<double,N> tau{{u1*TAU_MAX,0.0,u3*TAU_MAX}};
+      // Joint 3 is an internal motor between link 2 and link 3. In absolute
+      // coordinates its generalized force is (tau1, -tau3, tau3): the reaction
+      // on link 2 is part of the same joint torque. (tau1, 0, tau3) would be a
+      // reactionless external torque on link 3 and would contradict joint 2
+      // being passive.
+      std::array<double,N> tau{{u1*TAU_MAX,-u3*TAU_MAX,u3*TAU_MAX}};
       // one control step with 4 RK4 substeps
       double h=DT/SUB;
       for(int sub=0;sub<SUB;sub++){

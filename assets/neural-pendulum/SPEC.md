@@ -25,7 +25,7 @@ agent 必须：
 4. 保证基础设施通过 `build/nn_task` 固定 CLI 的数值评测：评测侧用 PyTorch 在相同数据上计算参考值，逐操作比较加权平均相对误差并对照阈值。
 5. 提交的源码中不得出现 torch；候选运行时不提供 Python/torch。
 
-允许在开发阶段使用 PyTorch 做数值自查和参考，但提交源码必须完全独立。
+评测侧用 PyTorch 计算参考值；工作区/候选运行时不提供 PyTorch 或 numpy（也无网络），开发阶段请用 C++ 或独立 double 标量参考做自查。提交源码必须完全独立。
 
 ## 3. 被控对象
 
@@ -34,7 +34,7 @@ agent 必须：
 - 3 根均匀杆
 - 第一关节、第三关节受控；第二关节被动
 - 控制量: 两个归一化力矩 [u1, u3]，每个 in [-1, 1]
-- 物理力矩: tau_1 = u1 * tau_max，tau_3 = u3 * tau_max，tau_2 = 0
+- 物理力矩: 关节 1 电机力矩 tau_1 = u1 * tau_max；关节 3 电机力矩 tau_3 = u3 * tau_max（关节 3 是杆 2/杆 3 之间的内部电机，杆 2 受到 -tau_3 反作用）；关节 2 电机力矩为 0。在绝对角度坐标下广义驱动力向量为 (tau_1, -tau_3, tau_3)。
 - 控制频率: 100 Hz，控制周期 dt = 0.01 s
 - 每个控制周期内部用 4 个 RK4 子步
 - 最大仿真时长: 30.0 s
@@ -118,7 +118,8 @@ obs = [a1, a2, a3]  (rad)
 ~~~
 tau_1 = u1 * tau_max
 tau_3 = u3 * tau_max
-tau_2 = 0
+tau_2(joint motor) = 0
+absolute generalized force = (tau_1, -tau_3, tau_3)
 ~~~
 
 非有限值、超范围或格式错误：

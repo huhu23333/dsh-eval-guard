@@ -15,7 +15,7 @@ try {
   run([process.execPath, '-e', 'console.log("node-ok", process.version)'], 'node')
   run(['/usr/bin/g++', '-O2', 'a.cpp', '-o', 'a.out'], 'gcc')
   run([path.join(root, 'a.out')], 'run')
-  run(['/usr/bin/python3', '-c', 'import socket\ns=socket.socket()\nprint("SHOULD_NOT")'], 'net')
+  run(['/usr/bin/python3', '-c', 'import socket\ns=socket.socket()\ns.connect(("1.1.1.1", 80))\nprint("SHOULD_NOT")'], 'net')
 } finally {
   fs.rmSync(root, { recursive: true, force: true })
 }

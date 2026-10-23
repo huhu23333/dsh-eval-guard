@@ -3,7 +3,7 @@
 在 DSH 中启用后，约束**所有用户主对话**：
 
 - 文件类工具（read/write/edit/grep/glob/ops_*/drawio_* 等）做参数路径审计：只允许修改会话工作区；工作区之外允许读取“用户不可写但可读”的文件（系统文件、只读资料），用户可写的数据目录仍不可读写。进程沙箱内 `/tmp` 映射到工作区 `.tmp`；文件工具不会重写路径，读写 `/tmp` 请直接使用工作区内的 `.tmp` 路径。
-- 进程类工具（bash / run_code / 后台任务）由 bwrap + seccomp supervisor 二次约束：只读系统视图、工作区可写、私有 /tmp、无网络；进入沙箱前清空继承环境，只回填 PATH/HOME/TMPDIR/XDG/LANG 等非敏感变量，避免宿主 API key / 代理泄漏；越界访问会记录并终止进程组。
+- 进程类工具（bash / run_code / 后台任务）由 bwrap + seccomp supervisor 二次约束：只读系统视图、工作区可写、私有 /tmp、无网络；进入沙箱前清空继承环境，只回填 PATH/HOME/TMPDIR/XDG/LANG 等非敏感变量，避免宿主 API key / 代理泄漏。文件越界访问会记录并终止进程组；网络 `connect/bind/sendto` 对 AF_INET/AF_INET6 返回 EPERM 并记录，但不杀进程组（`socket()` 创建允许，避免 pip/NSS 等本地检查被误杀），真正的网络边界是 bwrap 的私有 network namespace。
 - 禁止联网、子代理、Agent Team/跨 agent 通信，以及可绕过单次评测的持久化工具（goal / schedule / drawio / canvas 等）。用户 fork 出的会话仍按主会话约束；子代理会话本身也同样受工具审计和进程沙箱约束（黑名单只是额外的一层）。
 - 工具黑名单可配置；未知工具默认放行。DSH 内置与 dsh-ops 的文件工具会做参数路径审计。
 
@@ -58,6 +58,8 @@ CIFAR-10 下载缓存固定在 DSH home 下（默认 `~/.dsh/eval-guard/cache/ci
 所有任务的后台安装被取消或失败时，会删除本次安装已搬入工作区的文件，并清空工作区。清理只会在安装开始前工作区确实为空时执行，原工作区有内容时绝不触发。Neural-CIFAR 还会删除本次安装拥有的 CIFAR 下载锁，但不会删除其他 DSH 实例的锁。
 
 Neural-Pendulum 要求从零实现纯 C++17、仅 CPU、fp32 的神经网络基础设施，并用它训练控制器驱动预编译三节摆从接近全向下起摆、保持全向上 10 秒。后端评测与 Neural-FP32/Neural-CIFAR 使用同一套算子/阈值（单次调用 60 秒）。算子评测全部通过后才驱动 build/control，在固定初始状态上统计连续全向上时间 t_can。评测脚本在独立目录 `dsh-eval-guard/neural-pendulum-eval/`；宿主侧提交与测试工具为 eval_submit / eval_test，工具的注册依赖会话级 run 绑定。
+
+**开发参考环境**：修正后的 RL 可行性环境（Python + CPU PyTorch，仅开发参考，不进入候选工作区、不是提交依赖）放在 `assets/neural-pendulum/rl-feasibility/`。其 `sim.py` 与评测用 `sim_eval` 使用相同物理和物理关节力矩映射 `(tau1, -tau3, tau3)`；报告、汇总表和曲线在 `RESULTS.md` / `results/` 中。15 组实验确认：full 36D（cos/sin + 手动差分 da/5，H=4）+ base reward + random init 可学；去掉 da 或把 H 缩到 1 会失败；PPO/SAC 都应交付 best checkpoint。
 
 **分数**：eval_test 返回 stage / t_can / completed / error；时间积分 `final_score` 写入宿主侧事件与完成标记（`~/.dsh/eval-guard/neural-pendulum/<workspace>/done`），用于赛后排行，不返回给 agent。分数在**测试请求时刻**切换，当前测试结果也计入本次积分；宿主按事件重新计算最终值，而不是使用“评测完成时刻”的旧值。起算时间取首次提交写入的 meta.json。
 
@@ -174,7 +176,7 @@ DSH_CHECKOUT=/path/to/deepseek-harness scripts/install.sh web
 
 - 只支持 Linux；启用守护前会探测 bwrap 与 unprivileged user namespace，探测失败时设置页显示原因且不生效。
 - seccomp 用户通知的路径检查与 open 之间存在极小的 TOCTOU 窗口；bwrap 只读/无网络挂载是第二层内核边界。
-- io_uring 被拒绝（以 EPERM 软拒绝，不杀进程）；正常 syscall 不记录，进程审计只覆盖被拦截的文件/网络 syscall。
+- io_uring 被拒绝（以 EPERM 软拒绝，不杀进程）；正常 syscall 不记录，进程审计只覆盖被拦截的文件/网络 syscall。AF_INET/AF_INET6 的连接类 syscall 也是 EPERM 软拒绝；文件策略违规仍会终止进程组。
 - 工具路径审计只覆盖已知文件工具（DSH 内置、dsh-ops、drawio）；未知工具默认放行，这是产品选择，不是完整内核边界。
 - `forbiddenPaths` 的 `!` 例外只放宽审计；它不会把宿主 home、DSH 状态目录、共享 /tmp 或 workspace 的祖先 ro-bind 进沙箱。系统目录本身已只读可见，通常不需要 `!`。
 - 只读文件放行是产品选择：工作区之外“用户不可写但可读”的文件允许读取，因此只读安装的隐藏资产/数据不在 OS 权限层面被隐藏；真正需要隔离的隐藏数据仍需独立用户/容器。

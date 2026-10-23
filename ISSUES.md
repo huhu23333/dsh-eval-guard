@@ -1,10 +1,14 @@
 # dsh-eval-guard 问题清单与修复记录
 
-> 版本：0.7.3 · 审计基线：本仓库工作树（HEAD 1e1f6b4 + 未提交改动）
+> 版本：0.7.4 · 审计基线：本仓库工作树（含 0.7.4 修复与 Neural-Pendulum 修正环境）
 > 对照 DSH：0.2.1-alpha.1 源码（并核对 git tag 0.1.2 / 0.1.5 / 0.1.7 / 0.2.0-rc.1 / rc.2 / 0.2.1-alpha.1）
 > 本文件先记录问题，再记录修复状态。状态：✅ 已修复 / 🟡 部分修复 / ⛔ 保留（有明确原因或需要架构级改动）
 >
 > **2026-10-22 更新**：本轮只修复“守护本体 + Neural-Pendulum”。已修复：fork/子代理会话识别与约束、子代理路径审计、sandbox 继承环境清洗、PTC 控制通道标记回填、allow 规则宿主绑定安全、写路径规则、设置页任务默认值原子保存、Job 异步失败清理与重启 PID 校验、Pendulum 按请求时刻计分与 done final_score。  
+>
+> **2026-10-23 会话回归修复（未发版）**：修复 Neural-Pendulum 仿真器 Coriolis 项多乘 cos 导致高转速下能量注入并产生 NaN；修正关节 3 在绝对角坐标下的广义力矩映射，由 (tau1,0,tau3) 改为 (tau1,-tau3,tau3)；TASK/SPEC/prompt 明确 theta 约定并说明工作区无 PyTorch/numpy；网络 syscall 改为 AF_INET/AF_INET6 的 EPERM 软拒绝，避免 pip/NSS 本地检查被误杀。
+
+> **0.7.4**：把上述修复连同固定物理的 RL 可行性环境一起发布。开发参考环境在 `assets/neural-pendulum/rl-feasibility/`（Python + CPU PyTorch，仅开发参考，不进入候选工作区）；其中报告/汇总/曲线已验证 full 36D + base reward + random init 可学、去掉手动差分 da 或 H=1 会失败、PPO/SAC 应交付 best checkpoint。
 > **下文仍有若干条目标记为 ✅ 但实际未完成，不要再按旧状态理解**：arena legacy 的 `std::thread` 静态规则未移除；`cifar_cache.py` 解压仍无 filter、缓存路径仍用 `Path.home()/.dsh`；CIFAR 隐藏标签仍以文件形式落盘；FP32“30 分钟整轮”仍是 op 间检查；无 baseline 时评测仍 fail-open。其余任务相关修复按用户要求暂不动。
 
 ## 0. 修复状态总览

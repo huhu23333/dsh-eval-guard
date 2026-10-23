@@ -432,6 +432,10 @@ function bwrapArgs(workspace: string, rules: readonly PathRule[], runtime: Runti
   // Node/libuv opportunistically uses io_uring; the supervisor rejects it so a
   // program cannot bypass syscall-level path checks. Keep libuv on epoll.
   args.push('--setenv', 'UV_USE_IO_URING', '0')
+  // pip's post-command update check opens an AF_INET socket even for
+  // `pip --version`, which would otherwise trip the no-network kill path.
+  args.push('--setenv', 'PIP_DISABLE_PIP_VERSION_CHECK', '1')
+  args.push('--setenv', 'PIP_NO_INPUT', '1')
   return args
 }
 

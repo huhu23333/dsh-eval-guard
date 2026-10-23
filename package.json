@@ -1,6 +1,6 @@
 {
   "name": "dsh-eval-guard",
-  "version": "0.7.3",
+  "version": "0.7.4",
   "type": "module",
   "description": "Evaluation guard for DSH: workspace-only filesystem, no network/subagents, wall-clock limits, and task installation for meow-ai-arena and benchmark tasks.",
   "license": "MIT",
@@ -48,7 +48,7 @@
     "build": "tsdown && node scripts/build-native.mjs",
     "build:native": "node scripts/build-native.mjs",
     "prepare": "tsdown",
-    "test": "node test/simulate.ts && node test/scoring.ts && node test/jobs.ts",
+    "test": "node test/simulate.ts && node test/scoring.ts && node test/jobs.ts && node test/pendulum-sim.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dsh": {

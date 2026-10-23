@@ -26,10 +26,11 @@ const allowed = [
   'echo tmp > /tmp/t && cat /tmp/t',
   'printf "#include <cstdio>\nint main(){return 0;}\n" > sub/t.cpp && g++ -O2 -std=c++20 sub/t.cpp -o sub/t && ./sub/t && echo gcc-ok',
   'tar -cf sub/a.tar inside.txt && tar -tf sub/a.tar',
+  'python3 -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.close(); print(1)"',
 ]
 const blocked = [
   'cat ' + path.join(process.env.HOME || '/root', '.bashrc'),
-  'python3 -c "import socket; socket.socket(socket.AF_INET, socket.SOCK_STREAM)"',
+  'python3 -c "import socket; s=socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.connect((\"1.1.1.1\", 80))"',
   'echo x > ' + path.join(path.dirname(root), 'outside.txt'),
 ]
 let failed = 0
