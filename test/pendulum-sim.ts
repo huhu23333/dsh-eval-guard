@@ -1,8 +1,11 @@
 /**
  * Neural-Pendulum simulator regression tests.
  *
- * 1. Stability: plausible extreme control sequences must not produce NaN/Inf.
- * 2. Torque mapping: joint 3 is an internal motor, so its generalized force in
+ * 1. Stability: the agent-facing random-reset simulator must not produce
+ *    NaN/Inf under plausible extreme control sequences.
+ * 2. Separation: the agent simulator is random-reset only; the evaluator
+ *    simulator is fixed-reset only.
+ * 3. Torque mapping: joint 3 is an internal motor, so its generalized force in
  *    absolute coordinates is (tau1, -tau3, tau3), not (tau1, 0, tau3).
  */
 import assert from 'node:assert/strict'
@@ -10,9 +13,11 @@ import { spawn } from 'node:child_process'
 import { createInterface } from 'node:readline'
 import path from 'node:path'
 
-const sim = path.join(import.meta.dirname, '..', 'assets', 'neural-pendulum', 'sim_eval')
+const root = path.join(import.meta.dirname, '..', 'assets', 'neural-pendulum')
+const simAgent = path.join(root, 'sim_agent')
+const simEval = path.join(root, 'sim_eval')
 
-function drive(args: string[], script: (send: (value: object) => void, next: () => Promise<string>) => Promise<void>): Promise<void> {
+function drive(sim: string, args: string[], script: (send: (value: object) => void, next: () => Promise<string>) => Promise<void>): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(sim, args, { stdio: ['pipe', 'pipe', 'ignore'] })
     const rl = createInterface({ input: child.stdout })
@@ -47,8 +52,9 @@ const patterns: { name: string; torque: (step: number) => [number, number] }[] =
   } },
 ]
 
+// Agent simulator: random near-down reset; no fixed evaluation state.
 for (const pattern of patterns) {
-  await drive([], async (send, next) => {
+  await drive(simAgent, ['--seed', '0'], async (send, next) => {
     send({ cmd: 'reset' })
     await next()
     for (let step = 0; step < 3000; step++) {
@@ -59,13 +65,21 @@ for (const pattern of patterns) {
   })
 }
 
-// Fixed initial state; one control step. The expected value is computed from
-// the independent Lagrangian equations with generalized torque
-// (tau1, -tau3, tau3). A regression to (tau1, 0, tau3) changes these numbers.
-const expectedFirstStep = [-3.1189, 3.10593, -3.08296]
-await drive(['--eval'], async (send, next) => {
+// The evaluator simulator must always reset to the fixed initial state.
+const fixedReset = [-3.12859, 3.13359, -3.12059]
+await drive(simEval, [], async (send, next) => {
   send({ cmd: 'reset' })
-  await next()
+  const first = await next()
+  const firstObs = (JSON.parse(first) as { obs: number[] }).obs
+  for (let i = 0; i < 3; i++) {
+    assert.ok(Math.abs(firstObs[i] - fixedReset[i]) < 2e-4,
+      'eval simulator reset is not the fixed evaluation state: obs[' + String(i) + ']=' + String(firstObs[i]))
+  }
+
+  // Fixed initial state; one control step. The expected value is computed from
+  // the independent Lagrangian equations with generalized torque
+  // (tau1, -tau3, tau3). A regression to (tau1, 0, tau3) changes these numbers.
+  const expectedFirstStep = [-3.1189, 3.10593, -3.08296]
   send({ cmd: 'step', torque: [0, 1] })
   const line = await next()
   const obs = (JSON.parse(line) as { obs: number[] }).obs
@@ -76,4 +90,4 @@ await drive(['--eval'], async (send, next) => {
   }
 })
 
-console.log('pendulum simulator stability and torque mapping: OK')
+console.log('pendulum simulator stability, split, and torque mapping: OK')

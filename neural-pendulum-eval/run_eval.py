@@ -266,7 +266,9 @@ def main() -> int:
             return emit(fail(ops_eval.infrastructure_error(ops), 'infra', workspace, events, ops=ops))
 
         env = child_env()
-        sim = subprocess.Popen([str(SIM), '--eval'], stdin=subprocess.PIPE,
+        # sim_eval is the evaluator-only binary: reset is always the fixed
+        # evaluation initial state; no flag or random mode exists there.
+        sim = subprocess.Popen([str(SIM)], stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
         control = subprocess.Popen([str(control_path)], cwd=str(source),
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE,

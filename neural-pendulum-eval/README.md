@@ -13,8 +13,10 @@ plugin UI.
 - `ops_eval.py` — operator oracle: PyTorch references computed in-process,
   weighted mean relative error compared with per-operation thresholds. Same
   operations, cases, seeds and thresholds as Neural-FP32 / Neural-CIFAR.
-- `sim_eval` — trusted simulator binary for the evaluation initial state.
-  Identical to the workspace `tools/sim`.
+- `sim_eval` — trusted evaluator-only simulator binary.  Every `reset` is the
+  fixed evaluation initial state; it has no random training reset and no
+  `--eval` switch.  The workspace `tools/sim` is a separate agent/training
+  binary that only does random near-down resets and is not shipped here.
 
 ## Requirements
 

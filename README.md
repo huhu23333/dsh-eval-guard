@@ -59,7 +59,7 @@ CIFAR-10 下载缓存固定在 DSH home 下（默认 `~/.dsh/eval-guard/cache/ci
 
 Neural-Pendulum 要求从零实现纯 C++17、仅 CPU、fp32 的神经网络基础设施，并用它训练控制器驱动预编译三节摆从接近全向下起摆、保持全向上 10 秒。后端评测与 Neural-FP32/Neural-CIFAR 使用同一套算子/阈值（单次调用 60 秒）。算子评测全部通过后才驱动 build/control，在固定初始状态上统计连续全向上时间 t_can。评测脚本在独立目录 `dsh-eval-guard/neural-pendulum-eval/`；宿主侧提交与测试工具为 eval_submit / eval_test，工具的注册依赖会话级 run 绑定。
 
-**开发参考环境**：修正后的 RL 可行性环境（Python + CPU PyTorch，仅开发参考，不进入候选工作区、不是提交依赖）放在 `assets/neural-pendulum/rl-feasibility/`。其 `sim.py` 与评测用 `sim_eval` 使用相同物理和物理关节力矩映射 `(tau1, -tau3, tau3)`；报告、汇总表和曲线在 `RESULTS.md` / `results/` 中。15 组实验确认：full 36D（cos/sin + 手动差分 da/5，H=4）+ base reward + random init 可学；去掉 da 或把 H 缩到 1 会失败；PPO/SAC 都应交付 best checkpoint。
+**仿真器分离**：工作区 `tools/sim` 是只接受随机近向下 reset 的**训练/自测**仿真器，不包含固定评测初态；评测使用独立 `neural-pendulum-eval/sim_eval`，它只做固定初态 reset。工作区不提供仿真器源码。
 
 **分数**：eval_test 返回 stage / t_can / completed / error；时间积分 `final_score` 写入宿主侧事件与完成标记（`~/.dsh/eval-guard/neural-pendulum/<workspace>/done`），用于赛后排行，不返回给 agent。分数在**测试请求时刻**切换，当前测试结果也计入本次积分；宿主按事件重新计算最终值，而不是使用“评测完成时刻”的旧值。起算时间取首次提交写入的 meta.json。
 

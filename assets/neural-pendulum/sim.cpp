@@ -89,13 +89,35 @@ static void deriv(const State& s, const std::array<double,N>& tau, State& out) {
 } // namespace
 
 int main(int argc, char** argv) {
-  bool eval=false; int seed=0;
-  for(int i=1;i<argc;i++){ std::string a=argv[i]; if(a=="--eval") eval=true; else if(a=="--seed" && i+1<argc) seed=std::atoi(argv[++i]); }
+#ifdef DSH_EVAL_SIM
+  /* Evaluator-only binary: every reset MUST use the fixed evaluation state.
+   * This build deliberately contains no random training reset path. */
+  (void)argc;
+  (void)argv;
+#else
+  /* Agent/training binary: every reset is a random near-down state.  This
+   * build deliberately contains no fixed evaluation state and no --eval flag,
+   * so the agent cannot query the evaluation initial condition from it. */
+  int seed=0;
+  for(int i=1;i<argc;i++){
+    std::string a=argv[i];
+    if(a=="--seed" && i+1<argc) seed=std::atoi(argv[++i]);
+  }
   std::mt19937 rng(seed);
   std::uniform_real_distribution<double> u(-1.0,1.0);
+#endif
   State s;
   int steps=0; bool ready=false;
-  auto reset=[&](){ steps=0; ready=true; if(eval){ s.theta={0.013,-0.008,0.021}; s.omega={0,0,0}; } else { s.theta={u(rng)*0.05,u(rng)*0.05,u(rng)*0.05}; s.omega={u(rng)*0.02,u(rng)*0.02,u(rng)*0.02}; } };
+  auto reset=[&](){
+    steps=0; ready=true;
+#ifdef DSH_EVAL_SIM
+    s.theta={0.013,-0.008,0.021};
+    s.omega={0,0,0};
+#else
+    s.theta={u(rng)*0.05,u(rng)*0.05,u(rng)*0.05};
+    s.omega={u(rng)*0.02,u(rng)*0.02,u(rng)*0.02};
+#endif
+  };
   // zero state
   s.theta={0,0,0}; s.omega={0,0,0};
   std::string line;
