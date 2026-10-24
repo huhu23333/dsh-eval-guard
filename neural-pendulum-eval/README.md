@@ -7,15 +7,14 @@ plugin UI.
 ## Contents
 
 - `run_eval.py` — builds the latest submission, runs the operator oracle, then
-  drives `build/control` against the fixed-initial-state simulator and emits a
+  drives `build/control` against 100 random hidden episodes and emits a
   staged result (`no_submission` / `compile` / `infra` / `controller` /
   `simulation` / `scoring` / `completed`).
 - `ops_eval.py` — operator oracle: PyTorch references computed in-process,
   weighted mean relative error compared with per-operation thresholds. Same
   operations, cases, seeds and thresholds as Neural-FP32 / Neural-CIFAR.
-- `sim_eval` — trusted evaluator-only simulator binary.  Every `reset` is the
-  fixed evaluation initial state; it has no random training reset and no
-  `--eval` switch.  The workspace `tools/sim` is a separate agent/training
+- `sim_eval` — trusted evaluator-only simulator binary.  Every reset samples a
+  random hidden plant, initial state and observation-noise level; no --eval switch.  The workspace `tools/sim` is a separate agent/training
   binary that only does random near-down resets and is not shipped here.
 
 ## Requirements

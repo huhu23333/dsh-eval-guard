@@ -16,7 +16,8 @@ const OUTPUT_SCHEMA = {
   additionalProperties: true,
   properties: {
     ok: { type: 'boolean' }, submission: { type: 'string' }, files: { type: 'number' },
-    stage: { type: 'string' }, t_can: { type: 'number' }, completed: { type: 'boolean' },
+    stage: { type: 'string' }, t_can: { type: 'number' }, success_rate: { type: 'number' },
+    episodes: { type: 'number' }, completed: { type: 'boolean' },
     error: { type: 'string' },
   },
   required: ['ok'],
@@ -49,7 +50,7 @@ export function registerAgentSubmissionTools(agent: AgentWithTools, guard: Guard
   }
   const test = {
     name: 'eval_test',
-    description: 'Run a host-side evaluation of the latest submitted snapshot and return stage, t_can, completed and error. Only successful tests update the score.',
+    description: 'Run a host-side evaluation of the latest submitted snapshot and return stage, t_can, success_rate, episodes, completed and error. Only successful tests update the score.',
     parameters: { type: 'object', properties: {} },
     output: { schema: OUTPUT_SCHEMA, render },
     timeoutMs: 22 * 60_000,

@@ -44,12 +44,14 @@ DT = 0.01
 MAX_STEPS = 3000
 T_TGT = 10.0
 UP_TOL = 0.05
+EPISODES = 100
+SUCCESS_TARGET = 0.8
 # The score changes at the test request instant. This process is started for
 # one request, so module import is the closest available request timestamp.
 TEST_TIME = time.time()
 # Hard budgets so a pathological submission cannot stall the evaluation job.
 OPS_DEADLINE_SECONDS = 240.0
-CONTROL_DEADLINE_SECONDS = 360.0
+CONTROL_DEADLINE_SECONDS = 900.0
 
 
 class LineReader:
@@ -125,6 +127,13 @@ def score_for(event: dict) -> float:
     if stage not in ('scoring', 'completed') and event.get('valid') is not True:
         return -1.0
     try:
+        success_rate = float(event.get('success_rate'))
+    except Exception:
+        success_rate = float('nan')
+    if math.isfinite(success_rate):
+        return (min(max(success_rate, 0.0), SUCCESS_TARGET) - SUCCESS_TARGET) / SUCCESS_TARGET
+    # Backward-compatible fallback for old single-episode events.
+    try:
         t_can = float(event.get('t_can', 0.0))
     except Exception:
         return -1.0
@@ -185,19 +194,23 @@ def emit(result: dict) -> int:
 
 
 def final_score_with_current(workspace: Path, events: list[dict], stage: str,
-                             t_can: float, success: bool) -> tuple[float, float | None]:
+                             t_can: float, success: bool, success_rate: float,
+                             episodes: int) -> tuple[float, float | None]:
     """Score including the test this process is performing at TEST_TIME."""
     current = {
         'event': 'test', 'time': TEST_TIME, 'stage': stage,
-        't_can': float(t_can), 'completed': bool(success),
+        't_can': float(t_can), 'success_rate': float(success_rate),
+        'episodes': int(episodes), 'completed': bool(success),
     }
     return final_score(workspace, [*events, current])
 
 
 def build_result(stage: str, workspace: Path, events: list[dict], error: str = '',
                  ops: dict | None = None, source: str = '', t_can: float = 0.0,
-                 success: bool = False) -> dict:
-    integral, done_at = final_score_with_current(workspace, events, stage, t_can, success)
+                 success: bool = False, success_rate: float = 0.0,
+                 episodes: int = 0) -> dict:
+    integral, done_at = final_score_with_current(workspace, events, stage, t_can, success,
+                                                 success_rate, episodes)
     result = {
         'task': 'neural-pendulum',
         'ok': True,
@@ -205,6 +218,8 @@ def build_result(stage: str, workspace: Path, events: list[dict], error: str = '
         'infra_ok': False,
         't_can': float(t_can),
         'success': bool(success),
+        'success_rate': float(success_rate),
+        'episodes': int(episodes),
         'error': error,
         'final_score': integral,
         'done_at': done_at,
@@ -266,8 +281,9 @@ def main() -> int:
             return emit(fail(ops_eval.infrastructure_error(ops), 'infra', workspace, events, ops=ops))
 
         env = child_env()
-        # sim_eval is the evaluator-only binary: reset is always the fixed
-        # evaluation initial state; no flag or random mode exists there.
+        # sim_eval is the evaluator-only binary.  Every reset samples a fresh
+        # hidden plant, initial state and observation-noise level; the success
+        # check uses the true state, while the controller only receives obs.
         sim = subprocess.Popen([str(SIM)], stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env)
         control = subprocess.Popen([str(control_path)], cwd=str(source),
@@ -276,90 +292,135 @@ def main() -> int:
         sim_reader = LineReader(sim)
         control_reader = LineReader(control)
 
-        write_line(sim, {'cmd': 'reset'})
-        try:
-            reply = json.loads(sim_reader.readline(10.0))
-            obs = reply['obs']
-        except Exception as exc:
-            return emit(fail('simulator reset failed: ' + str(exc), 'simulation', workspace, events, ops=ops))
-        try:
-            write_line(control, {'type': 'reset'})
-            ready = json.loads(control_reader.readline(10.0))
-        except Exception as exc:
-            return emit(fail('controller reset failed: ' + str(exc), 'controller', workspace, events, ops=ops))
-        if not isinstance(ready, dict) or ready.get('type') != 'ready':
-            return emit(fail('controller did not reply ready', 'controller', workspace, events, ops=ops))
-
-        t_can = 0.0
-        up_start = None
+        successes = 0
+        t_can_total = 0.0
         completed = False
         error = ''
         stage = 'scoring'
+        attempted = 0
         control_deadline = time.monotonic() + CONTROL_DEADLINE_SECONDS
-        for step in range(MAX_STEPS):
+        for ep in range(EPISODES):
             if time.monotonic() > control_deadline:
                 error = 'control evaluation deadline exceeded'
                 stage = 'simulation'
                 break
-            if not isinstance(obs, list) or len(obs) != 3:
-                error = 'simulator returned bad observation'
-                stage = 'simulation'
-                break
+            # A fresh hidden plant, random initial state and fresh observation
+            # noise level for every evaluation episode.
             try:
-                angles = [float(x) for x in obs]
-            except Exception:
-                error = 'simulator returned non-numeric observation'
-                stage = 'simulation'
-                break
-            if not all(math.isfinite(x) for x in angles):
-                error = 'simulator returned non-finite observation'
-                stage = 'simulation'
-                break
-            if max(abs(x) for x in angles) <= UP_TOL:
-                if up_start is None:
-                    up_start = step * DT
-                t_can = max(t_can, step * DT - up_start)
-            else:
-                up_start = None
-            if t_can >= T_TGT:
-                completed = True
-                stage = 'completed'
-                break
-
-            write_line(control, {'type': 'step', 'step': step, 'state': angles})
-            try:
-                action = json.loads(control_reader.readline(0.1))
-            except Exception as exc:
-                error = 'controller did not reply in time: ' + str(exc)
-                stage = 'controller'
-                break
-            torque = action.get('torque') if isinstance(action, dict) else None
-            if (not isinstance(torque, list) or len(torque) != 2
-                    or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
-                               and math.isfinite(v) for v in torque)
-                    or any(abs(float(v)) > 1.0 for v in torque)):
-                error = 'controller returned invalid torque'
-                stage = 'controller'
-                break
-            write_line(sim, {'cmd': 'step', 'torque': [float(torque[0]), float(torque[1])]})
-            try:
+                write_line(sim, {'cmd': 'reset'})
                 reply = json.loads(sim_reader.readline(10.0))
             except Exception as exc:
-                error = 'simulator did not reply: ' + str(exc)
+                error = 'simulator reset failed: ' + str(exc)
                 stage = 'simulation'
                 break
-            if not isinstance(reply, dict):
-                error = 'simulator returned bad reply'
-                stage = 'simulation'
+            obs = reply.get('obs') if isinstance(reply, dict) else None
+            true = reply.get('state', obs) if isinstance(reply, dict) else None
+            try:
+                write_line(control, {'type': 'reset'})
+                ready = json.loads(control_reader.readline(10.0))
+            except Exception as exc:
+                error = 'controller reset failed: ' + str(exc)
+                stage = 'controller'
                 break
-            if 'error' in reply:
-                error = 'simulator error: ' + str(reply['error'])
-                stage = 'simulation'
+            if not isinstance(ready, dict) or ready.get('type') != 'ready':
+                error = 'controller did not reply ready'
+                stage = 'controller'
                 break
-            obs = reply.get('obs')
-
+            attempted += 1
+            up_start = None
+            t_can_ep = 0.0
+            failed = False
+            for step in range(MAX_STEPS):
+                if time.monotonic() > control_deadline:
+                    error = 'control evaluation deadline exceeded'
+                    stage = 'simulation'
+                    failed = True
+                    break
+                if not isinstance(obs, list) or len(obs) != 3:
+                    error = 'simulator returned bad observation'
+                    stage = 'simulation'
+                    failed = True
+                    break
+                try:
+                    angles = [float(x) for x in obs]
+                    true_angles = [float(x) for x in true] if isinstance(true, list) and len(true) == 3 else angles
+                except Exception:
+                    error = 'simulator returned non-numeric observation'
+                    stage = 'simulation'
+                    failed = True
+                    break
+                if (not all(math.isfinite(x) for x in angles)
+                        or not all(math.isfinite(x) for x in true_angles)):
+                    error = 'simulator returned non-finite observation'
+                    stage = 'simulation'
+                    failed = True
+                    break
+                # Success is judged on the true state; the controller only sees
+                # the noisy angles below.
+                if max(abs(x) for x in true_angles) <= UP_TOL:
+                    if up_start is None:
+                        up_start = step * DT
+                    t_can_ep = max(t_can_ep, step * DT - up_start)
+                else:
+                    up_start = None
+                if t_can_ep >= T_TGT:
+                    break
+                write_line(control, {'type': 'step', 'step': step, 'state': angles})
+                try:
+                    action = json.loads(control_reader.readline(0.1))
+                except Exception as exc:
+                    error = 'controller did not reply in time: ' + str(exc)
+                    stage = 'controller'
+                    failed = True
+                    break
+                torque = action.get('torque') if isinstance(action, dict) else None
+                if (not isinstance(torque, list) or len(torque) != 2
+                        or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                                   and math.isfinite(v) for v in torque)
+                        or any(abs(float(v)) > 1.0 for v in torque)):
+                    error = 'controller returned invalid torque'
+                    stage = 'controller'
+                    failed = True
+                    break
+                write_line(sim, {'cmd': 'step', 'torque': [float(torque[0]), float(torque[1])]})
+                try:
+                    reply = json.loads(sim_reader.readline(10.0))
+                except Exception as exc:
+                    error = 'simulator did not reply: ' + str(exc)
+                    stage = 'simulation'
+                    failed = True
+                    break
+                if not isinstance(reply, dict):
+                    error = 'simulator returned bad reply'
+                    stage = 'simulation'
+                    failed = True
+                    break
+                if 'error' in reply:
+                    error = 'simulator error: ' + str(reply['error'])
+                    stage = 'simulation'
+                    failed = True
+                    break
+                obs = reply.get('obs')
+                true = reply.get('state', obs)
+            if failed:
+                break
+            if t_can_ep >= T_TGT:
+                successes += 1
+            t_can_total += t_can_ep
+        if attempted == 0:
+            if stage == 'scoring':
+                stage = 'simulation'
+            error = error or 'no evaluation episode could be executed'
+            success_rate, t_can = 0.0, 0.0
+        else:
+            success_rate = successes / attempted
+            t_can = t_can_total / attempted
+        completed = (stage == 'scoring' and attempted == EPISODES
+                     and success_rate >= SUCCESS_TARGET)
+        stage = 'completed' if completed else stage
         result = build_result(stage, workspace, events, error=error, ops=ops, source=source_name,
-                               t_can=t_can, success=completed)
+                               t_can=t_can, success=completed, success_rate=success_rate,
+                               episodes=attempted)
         result['infra_ok'] = True
         return emit(result)
     except Exception as exc:

@@ -1,12 +1,12 @@
 /**
- * Neural-Pendulum simulator regression tests.
+ * Neural-Pendulum Tier A simulator tests.
  *
- * 1. Stability: the agent-facing random-reset simulator must not produce
- *    NaN/Inf under plausible extreme control sequences.
- * 2. Separation: the agent simulator is random-reset only; the evaluator
- *    simulator is fixed-reset only.
- * 3. Torque mapping: joint 3 is an internal motor, so its generalized force in
- *    absolute coordinates is (tau1, -tau3, tau3), not (tau1, 0, tau3).
+ * 1. Stability: the agent-facing simulator must not produce NaN/Inf under
+ *    plausible extreme control sequences.
+ * 2. Randomization: every reset (agent and evaluator) samples a fresh hidden
+ *    plant/initial state/noise level, so consecutive resets differ.
+ * 3. Evaluator-only true state: sim_eval reports the noise-free state used for
+ *    the success check while the controller only gets the noisy obs.
  */
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
@@ -17,18 +17,18 @@ const root = path.join(import.meta.dirname, '..', 'assets', 'neural-pendulum')
 const simAgent = path.join(root, 'sim_agent')
 const simEval = path.join(root, 'sim_eval')
 
-function drive(sim: string, args: string[], script: (send: (value: object) => void, next: () => Promise<string>) => Promise<void>): Promise<void> {
+function drive(sim, args, script) {
   return new Promise((resolve, reject) => {
     const child = spawn(sim, args, { stdio: ['pipe', 'pipe', 'ignore'] })
     const rl = createInterface({ input: child.stdout })
-    const queue: string[] = []
-    let wake: (() => void) | undefined
+    const queue = []
+    let wake
     rl.on('line', line => { queue.push(line); wake?.(); wake = undefined })
-    const next = async (): Promise<string> => {
-      while (queue.length === 0) await new Promise<void>(done => { wake = done })
-      return queue.shift() as string
+    const next = async () => {
+      while (queue.length === 0) await new Promise(done => { wake = done })
+      return queue.shift()
     }
-    const send = (value: object): void => { child.stdin.write(JSON.stringify(value) + '\n') }
+    const send = value => { child.stdin.write(JSON.stringify(value) + '\n') }
     ;(async () => {
       await script(send, next)
       child.stdin.end()
@@ -38,13 +38,13 @@ function drive(sim: string, args: string[], script: (send: (value: object) => vo
   })
 }
 
-const patterns: { name: string; torque: (step: number) => [number, number] }[] = [
+const patterns = [
   { name: 'zero', torque: () => [0, 0] },
   { name: 'constant-left', torque: () => [1, 0] },
   { name: 'constant-both', torque: () => [1, 1] },
   { name: 'constant-joint3', torque: () => [0, 1] },
-  { name: 'sine', torque: (step) => [Math.sin(step * 0.05), Math.cos(step * 0.07)] },
-  { name: 'chaotic-blocks', torque: (step) => {
+  { name: 'sine', torque: step => [Math.sin(step * 0.05), Math.cos(step * 0.07)] },
+  { name: 'chaotic-blocks', torque: step => {
     const seed = Math.floor(step / 10)
     const a = ((seed * 1103515245 + 12345) % 2000) / 1000 - 1
     const b = ((seed * 214013 + 2531011) % 2000) / 1000 - 1
@@ -52,7 +52,6 @@ const patterns: { name: string; torque: (step: number) => [number, number] }[] =
   } },
 ]
 
-// Agent simulator: random near-down reset; no fixed evaluation state.
 for (const pattern of patterns) {
   await drive(simAgent, ['--seed', '0'], async (send, next) => {
     send({ cmd: 'reset' })
@@ -60,34 +59,40 @@ for (const pattern of patterns) {
     for (let step = 0; step < 3000; step++) {
       send({ cmd: 'step', torque: pattern.torque(step) })
       const line = await next()
-      assert.ok(!/nan|inf/i.test(line), pattern.name + ' produced non-finite obs at step ' + String(step) + ': ' + line)
+      assert.ok(!/nan|inf/i.test(line), pattern.name + ' produced non-finite obs at ' + String(step) + ': ' + line)
     }
   })
 }
 
-// The evaluator simulator must always reset to the fixed initial state.
-const fixedReset = [-3.12859, 3.13359, -3.12059]
-await drive(simEval, [], async (send, next) => {
+await drive(simAgent, ['--seed', '7'], async (send, next) => {
   send({ cmd: 'reset' })
-  const first = await next()
-  const firstObs = (JSON.parse(first) as { obs: number[] }).obs
-  for (let i = 0; i < 3; i++) {
-    assert.ok(Math.abs(firstObs[i] - fixedReset[i]) < 2e-4,
-      'eval simulator reset is not the fixed evaluation state: obs[' + String(i) + ']=' + String(firstObs[i]))
-  }
-
-  // Fixed initial state; one control step. The expected value is computed from
-  // the independent Lagrangian equations with generalized torque
-  // (tau1, -tau3, tau3). A regression to (tau1, 0, tau3) changes these numbers.
-  const expectedFirstStep = [-3.1189, 3.10593, -3.08296]
-  send({ cmd: 'step', torque: [0, 1] })
-  const line = await next()
-  const obs = (JSON.parse(line) as { obs: number[] }).obs
-  assert.equal(obs.length, 3)
-  for (let i = 0; i < 3; i++) {
-    assert.ok(Math.abs(obs[i] - expectedFirstStep[i]) < 2e-4,
-      'torque mapping regression: obs[' + String(i) + ']=' + String(obs[i]) + ' expected ' + String(expectedFirstStep[i]))
-  }
+  const a = JSON.parse(await next())
+  send({ cmd: 'reset' })
+  const b = JSON.parse(await next())
+  assert.ok(Array.isArray(a.obs) && a.obs.length === 3)
+  assert.ok(Array.isArray(b.obs) && b.obs.length === 3)
+  assert.notDeepEqual(a.obs, b.obs)
+  assert.ok(a.state === undefined, 'agent simulator must not expose true state')
 })
 
-console.log('pendulum simulator stability, split, and torque mapping: OK')
+await drive(simEval, [], async (send, next) => {
+  const states = []
+  for (let ep = 0; ep < 3; ep++) {
+    send({ cmd: 'reset' })
+    const reply = JSON.parse(await next())
+    assert.ok(Array.isArray(reply.obs) && reply.obs.length === 3)
+    assert.ok(Array.isArray(reply.state) && reply.state.length === 3)
+    for (const value of reply.obs.concat(reply.state)) assert.ok(Number.isFinite(value))
+    for (const value of reply.state) assert.ok(Math.abs(Math.abs(value) - Math.PI) < 0.35)
+    states.push(reply.state)
+  }
+  assert.notDeepEqual(states[0], states[1])
+  assert.notDeepEqual(states[1], states[2])
+
+  send({ cmd: 'step', torque: [0, 1] })
+  const stepped = JSON.parse(await next())
+  assert.ok(Array.isArray(stepped.state) && stepped.state.length === 3)
+  for (const value of stepped.state.concat(stepped.obs)) assert.ok(Number.isFinite(value))
+})
+
+console.log('pendulum Tier A simulator stability, randomization, and split: OK')

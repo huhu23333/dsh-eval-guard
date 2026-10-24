@@ -35,7 +35,7 @@ export const TASKS: readonly TaskInfo[] = [
   { id: NEURAL_CPP_TASK, label: NEURAL_CPP_TASK_LABEL, description: '从零实现纯 C++ 张量运算与反向传播后端；隐藏测试统计正确性与速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
   { id: NEURAL_FP32_TASK, label: NEURAL_FP32_TASK_LABEL, description: '从零实现纯 C++ FP32 神经网络算子、反向传播与优化器 CLI；逐操作统计误差和速度。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
   { id: NEURAL_CIFAR_TASK, label: NEURAL_CIFAR_TASK_LABEL, description: '从零实现纯 C++ 训练框架，构造并训练 CIFAR-10 图像分类网络；保留算子指标并统计验证集准确率与多线程推理性能。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
-  { id: NEURAL_PENDULUM_TASK, label: NEURAL_PENDULUM_TASK_LABEL, description: '从零实现纯 C++17 神经网络基础设施（算子数值以评测侧 PyTorch 参考校验），用三个关节角度控制预编译三节摆起摆并稳定保持；评测固定初始状态，统计 t_can。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
+  { id: NEURAL_PENDULUM_TASK, label: NEURAL_PENDULUM_TASK_LABEL, description: '从零实现纯 C++17 神经网络基础设施（算子数值以评测侧 PyTorch 参考校验），用三个关节角度控制预编译三节摆起摆并稳定保持；评测随机隐藏回合，统计成功率。', timeLimitMinutes: 1440, timeLimitEnabled: false, needsSetup: true },
 ]
 
 /** The tank task definition (original prompt; only halftime mechanics removed). */
@@ -336,13 +336,13 @@ export const NEURAL_PENDULUM_DEFINITION: TaskDefinition = {
       '',
       '请先完整阅读 TASK.md；它是权威规则。硬约束：仅 C++17 标准库、仅 CPU、fp32；不使用 Python/OpenCL/CUDA/BLAS/Eigen/第三方库；必须从提交源码构建出 build/nn_task 与 build/control。',
       '',
-      '环境细节：joint1 与 joint3 驱动，joint2 被动；控制频率 100 Hz；每回合最多 3000 步（30 s），达到上限后继续 step 返回 {"error":"episode_finished"}，必须 reset。theta=0 表示竖直向下、theta=pi 表示竖直向上；观测 a_i=wrap(theta_i-pi)，即三个关节角度（弧度，不除 pi）。环境不返回 reward/loss/cost/done；不提供杆长、质量、惯量、角速度或 tip。训练 reset 带小范围随机初始角度和角速度；评测使用固定初始状态，无随机扰动。',
+      '环境细节：joint1 与 joint3 驱动，joint2 被动；控制频率 100 Hz；每回合最多 3000 步（30 s），达到上限后继续 step 返回 {"error":"episode_finished"}，必须 reset。theta=0 表示竖直向下、theta=pi 表示竖直向上；观测 a_i=wrap(theta_i-pi)，即三个关节角度（弧度，不除 pi）。环境不返回 reward/loss/cost/done；不提供杆长、质量、惯量、角速度或 tip。训练与评测的每个回合都会随机化物理参数、初始状态和观测噪声；评测在 100 个隐藏随机回合上统计成功率，单回合连续全向上保持 10 s 记成功。',
       '',
-      '优化目标：从接近全向下起摆，使三根杆全部进入 0.05 rad 的竖直向上容差，并尽可能长时间保持；评测指标为 t_can。损失函数、奖励、优化器、网络结构和训练方法由你自行设计，不规定任何训练方案。',
+      '优化目标：从接近全向下起摆，使三根杆全部进入 0.05 rad 的竖直向上容差并保持；评测指标为 100 个隐藏随机回合上的成功率（每回合连续保持 10 s 记成功），成功率 >= 80% 即完成。损失函数、奖励、优化器、网络结构和训练方法由你自行设计，不规定任何训练方案。',
       '',
       '注意：评测侧用 PyTorch 计算算子参考值，但工作区/候选运行时不提供 PyTorch 或 numpy，也没有网络，无法 pip 安装；开发阶段请用 C++ 或 Python 标准库/独立 double 实现做数值对照。',
       '',
-      '评测会从干净副本重新构建提交源码，先运行与 Neural-FP32/Neural-CIFAR 相同的算子数值评测：评测侧用 PyTorch 在相同数据上计算参考值，逐操作比较加权平均相对误差并对照阈值，任一算子不可执行、崩溃、超时、输出缺失或误差超阈值即判为基础设施失败；然后在固定初始状态上驱动 build/control，统计连续全向上保持时间 t_can。不要把任何未提交的二进制、临时构建产物或外部进程当作交付依赖。',
+      '评测会从干净副本重新构建提交源码，先运行与 Neural-FP32/Neural-CIFAR 相同的算子数值评测：评测侧用 PyTorch 在相同数据上计算参考值，逐操作比较加权平均相对误差并对照阈值，任一算子不可执行、崩溃、超时、输出缺失或误差超阈值即判为基础设施失败；然后在 100 个随机隐藏回合上驱动 build/control，统计成功率（单回合连续全向上保持 10 s 记成功）。不要把任何未提交的二进制、临时构建产物或外部进程当作交付依赖。',
       '使用宿主工具 eval_submit 提交当前源码快照，使用 eval_test 请求宿主评测最新提交。提交快照、事件、测试结果和最终分数全部保存在工作区之外的宿主目录；不要尝试读取或修改这些数据，也不要依赖任何工作区内的测试结果文件。最终评测使用最新提交快照，按宿主事件时间积分计算分数。',
       '',
       '工作方式：先完成最小可构建的基础设施和 control 协议；再持续做控制/训练实验并记录可复现结果；最终保证工作区从零构建、build/nn_task 算子数值评测通过、control 可被评测驱动，并留下 NOTES.md/RESULTS.md。',
@@ -529,16 +529,22 @@ export class TaskService {
     return 'simulation'
   }
 
-  /** The target hold time used by the neural-pendulum scoring integral. */
-  private static readonly FINAL_T_TGT = 10
+  /** Evaluation success-rate target used by the neural-pendulum scoring integral. */
+  private static readonly FINAL_SUCCESS_TARGET = 0.8
 
   /** One test event's instantaneous score, mirroring the task specification. */
   private static eventScore(event: Record<string, unknown>): number {
     const stage = String(event['stage'] ?? '')
     if (stage !== 'scoring' && stage !== 'completed' && event['valid'] !== true) return -1
+    const rate = Number(event['success_rate'])
+    if (Number.isFinite(rate)) {
+      return (Math.min(Math.max(rate, 0), TaskService.FINAL_SUCCESS_TARGET)
+        - TaskService.FINAL_SUCCESS_TARGET) / TaskService.FINAL_SUCCESS_TARGET
+    }
+    // Backward-compatible fallback for old single-episode events.
     const value = Number(event['t_can'] ?? 0)
     if (!Number.isFinite(value)) return -1
-    return (Math.min(Math.max(value, 0), TaskService.FINAL_T_TGT) - TaskService.FINAL_T_TGT) / TaskService.FINAL_T_TGT
+    return (Math.min(Math.max(value, 0), 10) - 10) / 10
   }
 
   /**
@@ -639,11 +645,15 @@ export class TaskService {
       const rawStage = String(value.stage ?? '')
       const stage = rawStage !== '' ? rawStage : this.inferStage(value, error)
       const tCan = Number(value.t_can ?? 0)
+      const successRate = Number(value.success_rate ?? 0)
       const finalScore = Number(value.final_score ?? 0)
       return {
         stage,
         t_can: Number.isFinite(tCan) ? tCan : 0,
-        completed: stage === 'completed' && value.success === true,
+        success_rate: Number.isFinite(successRate) ? successRate : 0,
+        episodes: Number(value.episodes ?? 0),
+        completed: stage === 'completed' && Number.isFinite(successRate)
+          && successRate >= TaskService.FINAL_SUCCESS_TARGET,
         error,
         final_score: Number.isFinite(finalScore) ? finalScore : 0,
       }
@@ -662,17 +672,23 @@ export class TaskService {
     const latest = this.hostLatestSubmission(run.workspaceId)
     if (latest === undefined) {
       this.appendHostEvent(run.workspaceId, { event: 'test', time: requestedAt, submission_id: '',
-        stage: 'no_submission', t_can: 0, completed: false, error: '' })
+        stage: 'no_submission', t_can: 0, success_rate: 0, episodes: 0,
+        completed: false, error: '' })
       return { ok: true, stage: 'no_submission', t_can: 0, completed: false, error: '' }
     }
     const startedAt = this.hostStartedAt(run.workspaceId, run)
     const value = await this.runHostEval(run.workspaceId, startedAt)
     const stage = String(value.stage ?? 'simulation')
     const tCan = Number(value.t_can ?? 0)
-    const completed = stage === 'completed' && Number.isFinite(tCan) && tCan >= 10
+    const successRate = Number(value.success_rate ?? 0)
+    const episodes = Number(value.episodes ?? 0)
+    const completed = stage === 'completed' && Number.isFinite(successRate)
+      && successRate >= TaskService.FINAL_SUCCESS_TARGET
     const event: Record<string, unknown> = {
       event: 'test', time: requestedAt, submission_id: latest.id,
-      stage, t_can: tCan, completed, error: String(value.error ?? ''),
+      stage, t_can: tCan, success_rate: Number.isFinite(successRate) ? successRate : 0,
+      episodes: Number.isFinite(episodes) ? episodes : 0,
+      completed, error: String(value.error ?? ''),
     }
     // The evaluator only sees the events written before this test, so its
     // final_score omits the current outcome. Recompute the integral with the
@@ -685,9 +701,13 @@ export class TaskService {
     event['final_score'] = finalScore
     this.appendHostEvent(run.workspaceId, event)
     if (completed) {
-      fs.writeFileSync(done, JSON.stringify({ at: requestedAt, stage, t_can: tCan, final_score: finalScore }) + '\n', 'utf8')
+      fs.writeFileSync(done, JSON.stringify({ at: requestedAt, stage, t_can: tCan,
+        success_rate: Number.isFinite(successRate) ? successRate : 0,
+        episodes: Number.isFinite(episodes) ? episodes : 0, final_score: finalScore }) + '\n', 'utf8')
     }
-    return { ok: true, stage, t_can: tCan, completed, error: String(value.error ?? '') }
+    return { ok: true, stage, t_can: tCan, success_rate: Number.isFinite(successRate) ? successRate : 0,
+      episodes: Number.isFinite(episodes) ? episodes : 0,
+      completed, error: String(value.error ?? '') }
   }
 
   /** Build a temporary workspace containing the host-side authoritative state. */

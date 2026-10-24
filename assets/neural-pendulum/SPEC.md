@@ -1,11 +1,9 @@
-# Neural-Pendulum 任务规格 v1.4
+# Neural-Pendulum 任务规格 v1.5
 
 本文件是已确定的任务内部规格。实现、评测器、workspace 素材以此为准。
 后续除非明确修改规格，否则不再重新讨论这些规则。
 
-v1.4 变更：后端基础设施评测与 Neural-FP32 / Neural-CIFAR 统一为“固定 CLI +
-PyTorch 参考值 + 加权平均相对误差阈值”，不再使用 include/nn/nn.hpp 头文件契约和
-隐藏 C++ 基础设施测试。
+v1.5 变更：Tier A 控制任务。每回合随机化隐藏物理参数、初始状态与观测噪声；评测改为 100 个隐藏随机回合上的成功率，成功率 >= 0.8 完成。基础设施评测协议不变。
 
 ## 1. 任务标识
 
@@ -21,7 +19,7 @@ agent 必须：
 
 1. 从零实现一套神经网络基础设施（张量、算子、反向传播、优化器、线程池；控制器权重的打包方式自定，评测不要求特定序列化格式）。
 2. 使用该基础设施训练一个神经网络控制器。
-3. 控制预编译双驱动三节摆：第一、第三关节施加有限力矩，中间关节被动，从全向下起摆，并保持三根杆全部向上至少 t_tgt = 10.0 s。
+3. 控制预编译双驱动三节摆：第一、第三关节施加有限力矩，中间关节被动，从全向下起摆，并保持三根杆全部向上至少 t_tgt = 10.0 s；评测在 100 个随机隐藏回合上统计成功率，成功率 >= 0.8 完成。
 4. 保证基础设施通过 `build/nn_task` 固定 CLI 的数值评测：评测侧用 PyTorch 在相同数据上计算参考值，逐操作比较加权平均相对误差并对照阈值。
 5. 提交的源码中不得出现 torch；候选运行时不提供 Python/torch。
 
@@ -39,16 +37,16 @@ agent 必须：
 - 每个控制周期内部用 4 个 RK4 子步
 - 最大仿真时长: 30.0 s
 
-固定物理参数（环境内部隐藏，不向 agent 暴露）：
+每回合隐藏随机物理参数（不向 agent 暴露具体值）：
 
 ~~~
-m = [1.0, 1.0, 1.0] kg
-l = [0.5, 0.5, 0.5] m
-r = [0.25, 0.25, 0.25] m
-I = m * l^2 / 12
+m_i ~ Uniform(0.7, 1.3) kg
+l_i ~ Uniform(0.45, 0.55) m
+r_i = l_i / 2
+I_i = m_i * l_i^2 / 12
 g = 9.81 m/s^2
-joint damping = 0.01
-tau_max = 18.0 N m（每个驱动关节独立限制）
+joint damping ~ Uniform(0.005, 0.02)
+tau_max ~ Uniform(15.0, 21.0) N m（每个驱动关节独立限制）
 ~~~
 
 角度约定：
@@ -64,27 +62,16 @@ x_tip = sum_i l_i * sin(theta_i)
 y_tip = -sum_i l_i * cos(theta_i)
 ~~~
 
-## 4. 初始状态
+## 4. 初始状态与随机化
 
-训练仿真环境每次 reset 不加固定偏差，只加噪声：
-
-~~~
-theta_i ~ Uniform(-0.05, 0.05)  rad   i = 1,2,3，独立采样
-omega_i ~ Uniform(-0.02, 0.02)  rad/s i = 1,2,3，独立采样
-~~~
-
-即三根杆接近全向下，初始角度以全向下为中心随机扰动。
-
-评测环境使用固定初始状态：
+训练和评测的每个回合都重新采样隐藏物理参数、初始状态和观测噪声：
 
 ~~~
-theta = [0.013, -0.008, 0.021] rad
-omega = [0, 0, 0]
+theta_i ~ Uniform(-0.15, 0.15) rad   i = 1,2,3，独立采样
+omega_i ~ Uniform(-0.2, 0.2) rad/s   i = 1,2,3，独立采样
 ~~~
 
-三个固定角互不相同，且绝对值互不相同。
-
-评测期间不加入任何随机扰动。
+单回合内部参数不再改变；每次 reset 开始新回合。评测初始状态与训练同分布，但评测种子和回合序列不暴露给 agent。
 
 ## 5. Agent 观测
 
@@ -100,6 +87,7 @@ obs = [a1, a2, a3]  (rad)
 - theta_i 为绝对角度
 - a_i 为相对竖直向上的角度误差
 - 不提供角速度
+- 每一步返回的三个角度叠加随机观测噪声；噪声标准差每回合独立采样自 Uniform(0.002, 0.008) rad
 - 不提供第三杆末端位置
 - 不提供杆长/质量/惯量/真实物理参数
 
@@ -131,9 +119,9 @@ score = -1
 
 ## 7. 训练仿真接口
 
-工作区提供预编译 tools/sim，不提供源码和内部参数。  
-`tools/sim` 是**训练/自测专用**：每次 reset 只生成随机近向下初始状态，不包含固定评测初态，也不提供切换评测初态的参数。  
-评测使用独立程序 sim_eval；它每次 reset 固定为评测初始状态，不提供随机训练 reset。工作区不包含 sim_eval，也不包含任何固定评测初态参数。  
+工作区提供预编译 tools/sim，不提供源码和内部参数。
+`tools/sim` 是**训练/自测专用**：每次 reset 随机化隐藏物理参数、初始状态与观测噪声，不包含评测种子或固定评测初态。
+评测使用独立程序 sim_eval；它每次 reset 采样新的隐藏物理参数、初始状态和观测噪声，并在 100 个隐藏随机回合上统计成功率。工作区不包含 sim_eval，也不包含评测种子或回合序列。
 环境只提供状态转移，不提供 reward、loss、cost 或 done 信号。训练信号由 agent 自行构造。
 
 优化目标：
@@ -141,7 +129,7 @@ score = -1
 ~~~
 从接近全向下的初始状态起摆
 使三根杆全部进入竖直向上容差并尽可能长时间保持
-评测指标为 t_can
+评测指标为 100 个隐藏随机回合上的成功率（单回合 t_can >= 10 s 记成功）
 ~~~
 
 不规定损失函数、奖励函数、优化器或训练算法。
@@ -169,7 +157,7 @@ JSONL 协议：
 {"error":"episode_finished"}
 ~~~
 
-此时不会返回新的观测，也不会继续推进仿真。  
+此时不会返回新的观测，也不会继续推进仿真。
 必须发送 reset 才能开始新 episode；reset 之前的所有 step 都返回该错误。
 
 ## 8. 交付源码与构建
@@ -259,26 +247,30 @@ dt = 0.01 s
 最大仿真 = 30.0 s
 t_tgt = 10.0 s
 全向上容差 = 每根杆与竖直方向夹角 <= 0.05 rad
+评测回合数 = 100
+完成成功率阈值 = 0.8
 ~~~
 
-t_can 定义：
+单回合 t_can 定义：
 
 ~~~
 从 reset 开始，三根杆全部处于容差内的最长连续时间
 从未出现全向上则 t_can = 0
+单回合成功 = (t_can >= t_tgt)
 ~~~
 
-计分用的截断：
+100 回合统计：
 
 ~~~
-capped_t_can = min(t_can, t_tgt)
+success_rate = 成功回合数 / 100
+t_can = 100 回合 t_can 的平均值（仅用于报告）
 ~~~
 
 完成条件：
 
 ~~~
 infra_ok == true（全部算子可执行且误差不超阈值）
-且 t_can >= t_tgt
+且 success_rate >= 0.8
 ~~~
 
 ## 10. 提交与测试事件
@@ -317,8 +309,8 @@ compile         CMake 构建失败，或未产出 build/nn_task / build/control
 infra           build/nn_task 算子数值评测失败（不可执行/崩溃/超时/输出缺失/误差超阈值）
 controller      控制器启动/协议/崩溃/超时/非法输出
 simulation      仿真异常/NaN/仿真超时
-scoring         正常测试但 t_can < t_tgt
-completed       t_can >= t_tgt，任务完成
+scoring         正常测试但 success_rate < 0.8
+completed       success_rate >= 0.8，任务完成
 ~~~
 
 ### 返回给 agent 的测试结果
@@ -327,13 +319,15 @@ completed       t_can >= t_tgt，任务完成
 {
   "ok": true,
   "stage": "scoring",
-  "t_can": 4.2,
+  "t_can": 8.1,
+  "success_rate": 0.62,
+  "episodes": 100,
   "completed": false,
   "error": ""
 }
 ~~~
 
-返回 stage、t_can、completed，不返回最终分数。
+返回 stage、t_can、success_rate、episodes、completed，不返回最终分数。
 
 ## 11. 计分
 
@@ -350,7 +344,7 @@ score = -1
 有效测试：
 
 ~~~
-score = (min(t_can, t_tgt) - t_tgt) / t_tgt
+score = (min(success_rate, 0.8) - 0.8) / 0.8
 ~~~
 
 范围：
@@ -364,7 +358,7 @@ score = (min(t_can, t_tgt) - t_tgt) / t_tgt
 - 提交事件不改变 score
 - 只有测试请求改变 score
 - 测试失败：从该测试请求时刻起 score = -1
-- 测试成功：从该测试请求时刻起按 t_can 计分
+- 测试成功：从该测试请求时刻起按 success_rate 计分
 - 第一次测试请求之前：score = -1
 - 下一次测试请求之前，score 保持不变
 
@@ -386,7 +380,7 @@ T_done 是第一次返回 stage = completed 的测试请求时间。
 
 ~~~
 stage = completed
-t_can >= t_tgt
+success_rate >= 0.8
 infra_ok = true
 ~~~
 
@@ -431,6 +425,8 @@ stage
 ok
 infra_ok
 t_can
+success_rate
+episodes
 score
 completed
 ~~~
