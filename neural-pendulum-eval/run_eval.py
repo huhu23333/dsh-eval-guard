@@ -45,7 +45,7 @@ MAX_STEPS = 3000
 T_TGT = 10.0
 UP_TOL = 0.05
 EPISODES = 100
-SUCCESS_TARGET = 0.8
+SUCCESS_TARGET = 0.9
 # The score changes at the test request instant. This process is started for
 # one request, so module import is the closest available request timestamp.
 TEST_TIME = time.time()

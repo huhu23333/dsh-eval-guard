@@ -26,5 +26,11 @@ assert.equal(score(100, [
   { event: 'test', time: 120, stage: 'scoring', t_can: 0, completed: false },
 ], 130), -30)
 
+// success_rate scoring uses the 0.90 target.
+assert.equal(score(100, [
+  { event: 'test', time: 110, stage: 'scoring', success_rate: 0.9, completed: false },
+  { event: 'test', time: 120, stage: 'completed', success_rate: 0.9, completed: true },
+], 500), -10)
+
 fs.rmSync(home, { recursive: true, force: true })
 console.log('scoring test: OK')

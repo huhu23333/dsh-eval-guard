@@ -338,7 +338,13 @@ export const NEURAL_PENDULUM_DEFINITION: TaskDefinition = {
       '',
       '环境细节：joint1 与 joint3 驱动，joint2 被动；控制频率 100 Hz；每回合最多 3000 步（30 s），达到上限后继续 step 返回 {"error":"episode_finished"}，必须 reset。theta=0 表示竖直向下、theta=pi 表示竖直向上；观测 a_i=wrap(theta_i-pi)，即三个关节角度（弧度，不除 pi）。环境不返回 reward/loss/cost/done；不提供杆长、质量、惯量、角速度或 tip。训练与评测的每个回合都会随机化物理参数、初始状态和观测噪声；评测在 100 个隐藏随机回合上统计成功率，单回合连续全向上保持 10 s 记成功。',
       '',
-      '优化目标：从接近全向下起摆，使三根杆全部进入 0.05 rad 的竖直向上容差并保持；评测指标为 100 个隐藏随机回合上的成功率（每回合连续保持 10 s 记成功），成功率 >= 80% 即完成。损失函数、奖励、优化器、网络结构和训练方法由你自行设计，不规定任何训练方案。',
+      '优化目标：从接近全向下起摆，使三根杆全部进入 0.05 rad 的竖直向上容差并保持；评测指标为 100 个隐藏随机回合上的成功率（每回合连续保持 10 s 记成功），成功率 >= 90% 即完成。损失函数、奖励、优化器、网络结构和训练方法由你自行设计，不规定任何训练方案。',
+      '',
+      '该任务已由内部基线验证：100 回合成功率 >= 0.90 是可达的，不要怀疑可行性。在 eval_test 返回 stage=completed 之前，绝对不允许停止、总结或放弃；不要因为成功率接近 0.90、遇到平台期或短期没有提升就收尾。只要没有完成，就必须继续训练、改进、提交和测试，直到完成或外部强制停止。',
+      '',
+      '最终提交的 build/control 必须由神经网络输出层直接产生两个力矩；最终控制程序中不得包含任何显式控制律（PID/LQR/MPC/滑模/自抗扰等），也不得在神经网络之外根据状态计算或修正力矩。',
+      '',
+      '不得对已编译文件进行任何形式的逆向、反汇编、strings/objdump/readelf/gdb 分析，也不得读取 /proc 或其它进程内存。环境信息只能来自 TASK.md/SPEC.md 和正常使用 tools/sim 的 reset/step 输入输出；违规者成绩无效。',
       '',
       '注意：评测侧用 PyTorch 计算算子参考值，但工作区/候选运行时不提供 PyTorch 或 numpy，也没有网络，无法 pip 安装；开发阶段请用 C++ 或 Python 标准库/独立 double 实现做数值对照。',
       '',
@@ -530,7 +536,7 @@ export class TaskService {
   }
 
   /** Evaluation success-rate target used by the neural-pendulum scoring integral. */
-  private static readonly FINAL_SUCCESS_TARGET = 0.8
+  private static readonly FINAL_SUCCESS_TARGET = 0.9
 
   /** One test event's instantaneous score, mirroring the task specification. */
   private static eventScore(event: Record<string, unknown>): number {

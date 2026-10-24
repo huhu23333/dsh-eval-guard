@@ -98,10 +98,16 @@ success_rate = 成功回合数 / 100
 
 当：
 
-success_rate >= 0.8
+success_rate >= 0.9
 且神经网络基础设施数值评测全部通过
 
 任务完成，计时停止。
+
+该任务已由内部基线验证：100 回合成功率 >= 0.90 是可达的，不要怀疑可行性。在 eval_test 返回 stage=completed 之前，绝对不允许停止、总结或放弃；不要因为成功率接近 0.90、遇到平台期或短期没有提升就收尾。只要没有完成，就必须继续训练、改进、提交和测试，直到完成或外部强制停止。
+
+最终提交的 build/control 必须由神经网络输出层直接产生两个力矩；最终控制程序中不得包含任何显式控制律（PID/LQR/MPC/滑模/自抗扰等），也不得在神经网络之外根据状态计算或修正力矩。
+
+不得对已编译文件进行任何形式的逆向、反汇编、strings/objdump/readelf/gdb 分析，也不得读取 /proc 或其它进程内存。环境信息只能来自本文件/SPEC.md 和正常使用 tools/sim 的 reset/step 输入输出；违规者成绩无效。
 
 ## 训练用仿真接口
 
@@ -358,8 +364,8 @@ completed
 - infra：build/nn_task 算子数值评测失败（不可执行、崩溃、超时、输出缺失或误差超阈值）
 - controller：控制器启动、协议、崩溃、超时或输出非法
 - simulation：隐藏仿真推进异常、NaN 或超时
-- scoring：测试有效，但 `success_rate < 0.8`
-- completed：基础设施和仿真均通过，且 `success_rate >= 0.8`
+- scoring：测试有效，但 `success_rate < 0.9`
+- completed：基础设施和仿真均通过，且 `success_rate >= 0.9`
 
 最终排行分数不会返回给你，只用于赛后排名。
 
@@ -369,7 +375,7 @@ completed
 
 ~~~
 stage = completed
-success_rate >= 0.8
+success_rate >= 0.9
 ~~~
 
 即任务完成。
@@ -410,13 +416,13 @@ success_rate >= 0.8
 score(t) = -1
 
 有效测试：
-score(t) = (min(success_rate, 0.8) - 0.8) / 0.8
+score(t) = (min(success_rate, 0.9) - 0.9) / 0.9
 
 其中：
 
 success_rate 的范围是 [0, 1]
 success_rate = 0 时 score = -1
-success_rate >= 0.8 时 score = 0
+success_rate >= 0.9 时 score = 0
 
 分数从测试请求时刻开始生效，直到下一次测试请求。
 
@@ -458,5 +464,5 @@ T_done 是第一次返回 completed 的测试请求时间。
 2. 先实现最小可用的 tensor/算子/反向/优化器/线程池，并让 build/nn_task 跑通
 3. 用独立 double 标量参考、有限差分梯度检查逐算子核对误差，边界形状/广播/groups/stride/dilation 都要覆盖（工作区没有 PyTorch/numpy）
 4. 用 tools/sim 采集数据并训练控制器，导出权重供 build/control 使用
-5. 反复提交和测试，优先把 100 回合成功率提升到 80%
+5. 反复提交和测试，优先把 100 回合成功率提升到 90%
 6. 完成后立即总结

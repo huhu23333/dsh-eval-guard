@@ -1,6 +1,6 @@
 # dsh-eval-guard 问题清单与修复记录
 
-> 版本：0.7.6 · 审计基线：本仓库工作树（含 0.7.6 的 Neural-Pendulum Tier A 评测）
+> 版本：0.7.7 · 审计基线：本仓库工作树（含 0.7.7 的 Neural-Pendulum 0.90 阈值与审核包）
 > 对照 DSH：0.2.1-alpha.1 源码（并核对 git tag 0.1.2 / 0.1.5 / 0.1.7 / 0.2.0-rc.1 / rc.2 / 0.2.1-alpha.1）
 > 本文件先记录问题，再记录修复状态。状态：✅ 已修复 / 🟡 部分修复 / ⛔ 保留（有明确原因或需要架构级改动）
 >
@@ -8,7 +8,9 @@
 >
 > **2026-10-23 会话回归修复（未发版）**：修复 Neural-Pendulum 仿真器 Coriolis 项多乘 cos 导致高转速下能量注入并产生 NaN；修正关节 3 在绝对角坐标下的广义力矩映射，由 (tau1,0,tau3) 改为 (tau1,-tau3,tau3)；TASK/SPEC/prompt 明确 theta 约定并说明工作区无 PyTorch/numpy；网络 syscall 改为 AF_INET/AF_INET6 的 EPERM 软拒绝，避免 pip/NSS 本地检查被误杀。
 
-> **0.7.6**：Neural-Pendulum 切换为 Tier A 评测：每回合随机化隐藏物理参数、初始状态与观测噪声（无摩擦/滞后/延迟），评测改为 100 个隐藏随机回合的成功率，成功率 >= 0.8 完成；计分改为按成功率归一化。训练仿真器与评测仿真器均实现随机化，工作区仍只交付二进制，不提供仿真源码。
+> **0.7.7**：Neural-Pendulum 完成阈值提高到 0.90；prompt/TASK 声明任务已验证可完成、未 completed 前禁止停止；最终 build/control 必须由神经网络输出层直接产生力矩，最终控制程序不得含显式控制律；禁止逆向已编译文件或读取进程内存。另新增审核人员专用包 neural-pendulum-audit（不进入 workspace/npm 任务资产）。
+>
+> **0.7.6**：Neural-Pendulum 切换为 Tier A 评测：每回合随机化隐藏物理参数、初始状态与观测噪声（无摩擦/滞后/延迟），评测改为 100 个隐藏随机回合的成功率，成功率 >= 0.9 完成；计分改为按成功率归一化。训练仿真器与评测仿真器均实现随机化，工作区仍只交付二进制，不提供仿真源码。
 >
 > **0.7.5**：把 0.7.4 误带的开发用 RL 可行性代码从插件中撤除，只保留修正后的 simulator；同时把 agent 训练仿真器与评测仿真器拆开：`assets/neural-pendulum/sim_agent` 只做随机近向下 reset，评测用 `neural-pendulum-eval/sim_eval` 每个 reset 采样新的隐藏物理参数/初始状态/观测噪声；工作区仍只交付二进制，不提供仿真源码。工作区仍只交付二进制，不提供仿真源码。
 > **下文仍有若干条目标记为 ✅ 但实际未完成，不要再按旧状态理解**：arena legacy 的 `std::thread` 静态规则未移除；`cifar_cache.py` 解压仍无 filter、缓存路径仍用 `Path.home()/.dsh`；CIFAR 隐藏标签仍以文件形式落盘；FP32“30 分钟整轮”仍是 op 间检查；无 baseline 时评测仍 fail-open。其余任务相关修复按用户要求暂不动。
