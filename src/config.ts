@@ -13,6 +13,8 @@ export interface Config {
   timeLimitEnabled: boolean
   /** Minutes allowed for one user-message-to-turn-end window. */
   timeLimitMinutes: number
+  /** Minutes between automatic background-job reminders in tool results (0 disables). */
+  jobReminderMinutes: number
   /** Extra forbidden absolute paths, one per line, gitignore-like '!' exceptions. */
   forbiddenPaths: string
   /** When true the generated default blacklist applies; editing flips this off. */
@@ -48,6 +50,7 @@ export const DEFAULT_CONFIG: Config = {
   enabled: false,
   timeLimitEnabled: true,
   timeLimitMinutes: 90,
+  jobReminderMinutes: 5,
   forbiddenPaths: '',
   toolBlacklistUseDefault: true,
   toolBlacklist: '',
@@ -69,6 +72,7 @@ export const Config = z.object({
   enabled: z.boolean().default(false).volatile(),
   timeLimitEnabled: z.boolean().default(true).volatile(),
   timeLimitMinutes: z.number().default(90).volatile(),
+  jobReminderMinutes: z.number().default(5).volatile(),
   forbiddenPaths: z.string().default('').volatile(),
   toolBlacklistUseDefault: z.boolean().default(true).volatile(),
   toolBlacklist: z.string().default('').volatile(),
@@ -92,6 +96,7 @@ export function resolveConfig(value: Partial<Config> | undefined): Config {
     enabled: value?.enabled === true,
     timeLimitEnabled: value?.timeLimitEnabled !== false,
     timeLimitMinutes: Math.min(1440, Math.max(1, Math.round(minutes))),
+    jobReminderMinutes: Math.min(60, Math.max(0, Math.round(Number.isFinite(value?.jobReminderMinutes) ? Number(value?.jobReminderMinutes) : 5))),
     forbiddenPaths: typeof value?.forbiddenPaths === 'string' ? value.forbiddenPaths : '',
     toolBlacklistUseDefault: value?.toolBlacklistUseDefault !== false,
     toolBlacklist: typeof value?.toolBlacklist === 'string' ? value.toolBlacklist : '',

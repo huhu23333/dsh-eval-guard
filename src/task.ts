@@ -346,6 +346,10 @@ export const NEURAL_PENDULUM_DEFINITION: TaskDefinition = {
       '',
       '不得对已编译文件进行任何形式的逆向、反汇编、strings/objdump/readelf/gdb 分析，也不得读取 /proc 或其它进程内存。环境信息只能来自 TASK.md/SPEC.md 和正常使用 tools/sim 的 reset/step 输入输出；违规者成绩无效。',
       '',
+      '后台任务管理：长时间实验必须使用宿主管理的 run_in_background，禁止 nohup、setsid、disown 或尾随 & 脱管。启动任何长任务前先 job_list；同时最多保留 2 个后台任务；同一实验不要重复启动；读完日志且不再需要后立即 job_kill 或用受控方式清理。每约 5 分钟，下一次工具结果会附带当前 running 后台任务和本工作区 OS 进程提醒；看到提醒必须立即处理，不要等用户提醒。开始新方向、提交或最终回答前，必须清理所有不用的 job、训练进程和 tools/sim，确认没有残留。',
+      '',
+      '如果当前方向失败，必须记录失败原因、清理无用后台任务，并换一个实质性不同的方向继续；不要重复同一配置，也不要因为一次失败就断定任务不可做。只有 stage=completed 或外部手动停止才是结束条件。',
+      '',
       '注意：评测侧用 PyTorch 计算算子参考值，但工作区/候选运行时不提供 PyTorch 或 numpy，也没有网络，无法 pip 安装；开发阶段请用 C++ 或 Python 标准库/独立 double 实现做数值对照。',
       '',
       '评测会从干净副本重新构建提交源码，先运行与 Neural-FP32/Neural-CIFAR 相同的算子数值评测：评测侧用 PyTorch 在相同数据上计算参考值，逐操作比较加权平均相对误差并对照阈值，任一算子不可执行、崩溃、超时、输出缺失或误差超阈值即判为基础设施失败；然后在 100 个随机隐藏回合上驱动 build/control，统计成功率（单回合连续全向上保持 10 s 记成功）。不要把任何未提交的二进制、临时构建产物或外部进程当作交付依赖。',
@@ -603,6 +607,34 @@ export class TaskService {
   }
 
   /** The task start time recorded at first submission, falling back to the run creation time. */
+  /** Whether this run has reached the completed state. */
+  isCompleted(run: RunRecord): boolean {
+    try {
+      return fs.existsSync(path.join(this.hostDir(run.workspaceId), 'done'))
+    } catch {
+      return false
+    }
+  }
+
+  /** The latest host test event, if any. */
+  lastTest(run: RunRecord): Record<string, unknown> | undefined {
+    try {
+      const file = this.hostEvents(run.workspaceId)
+      if (!fs.existsSync(file)) return undefined
+      let last: Record<string, unknown> | undefined
+      for (const line of fs.readFileSync(file, 'utf8').split('\n')) {
+        if (line.trim() === '') continue
+        try {
+          const event = JSON.parse(line) as Record<string, unknown>
+          if (event['event'] === 'test') last = event
+        } catch { /* ignore malformed history */ }
+      }
+      return last
+    } catch {
+      return undefined
+    }
+  }
+
   private hostStartedAt(workspaceId: string, run: RunRecord): number {
     try {
       const meta = JSON.parse(fs.readFileSync(path.join(this.hostDir(workspaceId), 'meta.json'), 'utf8')) as { started_at?: unknown }

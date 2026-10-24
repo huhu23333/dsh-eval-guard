@@ -28,6 +28,7 @@ interface Draft {
   enabled: boolean
   timeLimitEnabled: boolean
   timeLimitMinutes: number
+  jobReminderMinutes: number
   forbiddenPaths: string
   toolBlacklistUseDefault: boolean
   toolBlacklist: string
@@ -48,6 +49,7 @@ const EMPTY: Draft = {
   enabled: false,
   timeLimitEnabled: true,
   timeLimitMinutes: 90,
+  jobReminderMinutes: 5,
   forbiddenPaths: '',
   toolBlacklistUseDefault: true,
   toolBlacklist: '',
@@ -79,6 +81,7 @@ function normalize(value: Record<string, unknown> | undefined): Draft {
     enabled: value?.enabled === true,
     timeLimitEnabled: value?.timeLimitEnabled !== false,
     timeLimitMinutes: typeof value?.timeLimitMinutes === 'number' ? value.timeLimitMinutes : 90,
+    jobReminderMinutes: typeof value?.jobReminderMinutes === 'number' ? value.jobReminderMinutes : 5,
     forbiddenPaths: typeof value?.forbiddenPaths === 'string' ? value.forbiddenPaths : '',
     toolBlacklistUseDefault: value?.toolBlacklistUseDefault !== false,
     toolBlacklist: typeof value?.toolBlacklist === 'string' ? value.toolBlacklist : '',
@@ -434,6 +437,14 @@ export function EvalGuardSettings({ form, t }: Props): ReactElement {
         <span style={note}>{t('settings.minutes')}</span>
       </div>
       <p style={note}>{t('settings.timeLimitHint')}</p>
+      <div style={row}>
+        <label>{t('settings.jobReminder')}</label>
+        <input type="number" min={0} max={60} value={draft.jobReminderMinutes} disabled={!ready}
+          style={{ width: 90 }} onChange={event => edit({ jobReminderMinutes: Number(event.target.value) })}
+          onBlur={() => void save({ jobReminderMinutes: draft.jobReminderMinutes })} />
+        <span style={note}>{t('settings.minutes')}</span>
+      </div>
+      <p style={note}>{t('settings.jobReminderHint')}</p>
     </section>
 
     <section style={box}>
