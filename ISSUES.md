@@ -1,6 +1,6 @@
 # dsh-eval-guard 问题清单与修复记录
 
-> 版本：0.7.9 · 审计基线：本仓库工作树（0.7.9 修复 turn-stopping 循环，0.7.8 增加后台任务提醒与未完成 turn 拦截）
+> 版本：0.7.10 · 审计基线：本仓库工作树（0.7.10 增加训练路线提示，0.7.9 修复 turn-stopping 循环，0.7.8 增加后台任务提醒与未完成 turn 拦截）
 > 对照 DSH：0.2.1-alpha.1 源码（并核对 git tag 0.1.2 / 0.1.5 / 0.1.7 / 0.2.0-rc.1 / rc.2 / 0.2.1-alpha.1）
 > 本文件先记录问题，再记录修复状态。状态：✅ 已修复 / 🟡 部分修复 / ⛔ 保留（有明确原因或需要架构级改动）
 >
@@ -8,6 +8,8 @@
 >
 > **2026-10-23 会话回归修复（未发版）**：修复 Neural-Pendulum 仿真器 Coriolis 项多乘 cos 导致高转速下能量注入并产生 NaN；修正关节 3 在绝对角坐标下的广义力矩映射，由 (tau1,0,tau3) 改为 (tau1,-tau3,tau3)；TASK/SPEC/prompt 明确 theta 约定并说明工作区无 PyTorch/numpy；网络 syscall 改为 AF_INET/AF_INET6 的 EPERM 软拒绝，避免 pip/NSS 本地检查被误杀。
 
+> **0.7.10**：Neural-Pendulum TASK/prompt 增加训练路线经验下限：显式速度特征、至少约 32 帧历史、至少 2×256 网络、小时级/数千万步训练、完整随机化训练、每个控制步更新动作、无复杂手工先验、model-free 主线、密集奖励、隐藏评测 checkpoint。0.90 与评测规则不变。
+>
 > **0.7.9**：修复未完成 turn-stopping 的无限 steer 循环：第一次纯文本 final 只 steer 一次并明确要求下一步必须调用工具；若仍无工具调用，cancel 当前 turn 并重开一个新 turn；连续 2 次重开仍无工具则只 cancel、不产生 final；用户手动 abort 会抑制已排队的 reopen；job reminder/eval 提示不变。
 >
 > **0.7.8**：新增后台任务守卫：每 0–60 分钟（默认 5 分钟）在下一次工具结果附带 running host jobs + 本工作区 OS 进程提醒；未 completed 时在 agent/turn-stopping 通过 agent.steer 继续 turn，用户手动停止或既有时间上限放行；eval_test 低分时附加“换方向/清理后台”提醒。

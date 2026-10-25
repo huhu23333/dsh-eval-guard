@@ -1,6 +1,6 @@
 {
   "name": "dsh-eval-guard",
-  "version": "0.7.9",
+  "version": "0.7.10",
   "type": "module",
   "description": "Evaluation guard for DSH: workspace-only filesystem, no network/subagents, wall-clock limits, and task installation for meow-ai-arena and benchmark tasks.",
   "license": "MIT",
