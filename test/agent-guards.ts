@@ -13,17 +13,27 @@ function harness(opts: { completed?: boolean; pendingUser?: boolean; aborted?: b
     status: 'active',
     workspacePath: process.cwd(),
   }
-  const services = { jobs: { list: () => [{ id: 'bash-x', kind: 'bash', label: 'trainer', status: 'running', startedAt: Date.now() - 60_000 }] } }
+  const listeners: Record<string, any> = {}
+  const services = {
+    jobs: { list: () => [{ id: 'bash-x', kind: 'bash', label: 'trainer', status: 'running', startedAt: Date.now() - 60_000 }] },
+    on: (name: string, fn: any) => { listeners[name] = fn },
+  }
   const guard = { configuration: { jobReminderMinutes: 5 }, runForSession: () => run }
   const tasks = { isCompleted: () => opts.completed === true, lastTest: () => ({ success_rate: 0, stage: 'scoring' }) }
   const steered: any[] = []
+  const followed: any[] = []
+  const cancelled: any[] = []
   const agent = {
     id: 's1', session: { id: 's1' },
     inbox: { nextTurn: opts.pendingUser ? [{ id: 'user-1', source: { kind: 'user' } }] : [], nextStep: [] },
     steer: (message: any) => { steered.push(message) },
+    followup: (message: any) => { followed.push(message) },
+    cancel: (cause: any) => { cancelled.push(cause) },
+    whenIdle: async () => {},
   }
   installAgentRunGuards(ctx as any, services as any, guard as any, tasks as any)
-  return { handlers, agent, steered }
+  const userAbort = () => listeners['session/event']?.({ id: 's1' }, { type: 'turn/end', data: { reason: { kind: 'aborted', reason: { kind: 'user' } } } })
+  return { handlers, agent, steered, followed, cancelled, userAbort }
 }
 
 const post = async (h: ReturnType<typeof harness>, name = 'bash', value: any = undefined) => {
@@ -67,7 +77,7 @@ const post = async (h: ReturnType<typeof harness>, name = 'bash', value: any = u
   const h = harness()
   h.handlers['agent/turn-stopping']({ agent: h.agent, signal: { aborted: false } })
   assert.equal(h.steered.length, 1)
-  assert.match(h.steered[0].content[0].text, /Do not stop/i)
+  assert.match(h.steered[0].content[0].text, /Do not write a status report/i)
 }
 
 // Completed task is not steered.
@@ -89,6 +99,43 @@ const post = async (h: ReturnType<typeof harness>, name = 'bash', value: any = u
   const h = harness()
   h.handlers['agent/turn-stopping']({ agent: h.agent, signal: { aborted: true } })
   assert.equal(h.steered.length, 0)
+}
+
+// A text-only final that ignores the first steer resets the turn instead of
+// injecting the same message again.
+{
+  const h = harness()
+  h.handlers['agent/turn-stopping']({ agent: h.agent, signal: { aborted: false } })
+  h.handlers['agent/turn-stopping']({ agent: h.agent, signal: { aborted: false } })
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(h.steered.length, 1)
+  assert.equal(h.cancelled.length, 1)
+  assert.equal(h.followed.length, 1)
+  assert.match(h.followed[0].content[0].text, /fresh turn/i)
+}
+
+// A user abort after the guard scheduled a reopen suppresses the reopen.
+{
+  const h = harness()
+  h.handlers['agent/turn-stopping']({ agent: h.agent, signal: { aborted: false } })
+  h.handlers['agent/turn-stopping']({ agent: h.agent, signal: { aborted: false } })
+  h.userAbort()
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(h.cancelled.length, 1)
+  assert.equal(h.followed.length, 0)
+}
+
+// Repeated text-only turns are bounded: after two resets the turn is cancelled
+// without another follow-up, so a refusing model cannot spin forever.
+{
+  const h = harness()
+  for (let i = 0; i < 4; i += 1) {
+    h.handlers['agent/turn-stopping']({ agent: h.agent, signal: { aborted: false } })
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+  assert.equal(h.steered.length, 1)
+  assert.equal(h.cancelled.length, 3)
+  assert.equal(h.followed.length, 2)
 }
 
 console.log('agent guards: OK')

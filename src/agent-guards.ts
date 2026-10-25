@@ -18,14 +18,31 @@ type AnyAgent = {
   session?: { id?: string }
   inbox?: { nextTurn?: readonly any[]; nextStep?: readonly any[] }
   steer?: (message: any) => void
+  followup?: (message: any) => void
+  cancel?: (cause: any, options?: any) => void
+  whenIdle?: () => Promise<void>
 }
 
-type Services = { jobs?: { list(caller?: string): any[] } }
+type Services = {
+  jobs?: { list(caller?: string): any[] }
+  /** Optional host event bus; used to notice a real user abort between guard resets. */
+  on?: (event: string, listener: (...args: any[]) => void) => void
+}
 
 type SessionState = {
   lastJobReminder: number
   evalFailures: number
   ownMessageIds: Set<string>
+  /** Time of the last tool result, used to tell a text-only final from a real stop. */
+  lastToolAt: number
+  /** Time of the last steer/follow-up; a newer tool result means the agent actually worked. */
+  lastSteerAt: number
+  /** Consecutive same-turn text-only resets; capped so a refusing model cannot spin forever. */
+  resets: number
+  /** A cancel/reopen is in flight. */
+  recovering: boolean
+  /** Set when the user aborted a turn; suppresses an already-scheduled reopen. */
+  userStopped: boolean
 }
 
 function sessionIdOf(agent: AnyAgent): string {
@@ -129,17 +146,36 @@ function failureText(last: Record<string, unknown> | undefined, failures: number
   return text
 }
 
+function actionText(last: Record<string, unknown> | undefined, jobs: number): string {
+  const rate = last?.['success_rate']
+  const stage = String(last?.['stage'] ?? 'unknown')
+  const status = rate === undefined ? 'stage=' + stage : 'stage=' + stage + ', success_rate=' + String(rate)
+  const jobHint = jobs > 0 ? ' Clean the ' + String(jobs) + ' running host job(s) you no longer need first.' : ''
+  return '[eval-guard: action required] Evaluation is not complete (' + status + '). '
+    + 'Do not write a status report or final answer. Your next response MUST contain at least one tool call '
+    + 'that makes progress: run an experiment, inspect a result, submit, or run eval_test.' + jobHint
+    + ' A prose-only reply will not move the task forward. Only stage=completed (success_rate >= 0.90) or an external manual stop ends the task.'
+}
+
 /** Install the per-run reminders once for all agents; each listener filters by run. */
 export function installAgentRunGuards(ctx: any, services: Services, guard: Guard, tasks: TaskService): void {
   const states = new Map<string, SessionState>()
   const stateFor = (sessionId: string): SessionState => {
     let state = states.get(sessionId)
     if (state === undefined) {
-      state = { lastJobReminder: 0, evalFailures: 0, ownMessageIds: new Set() }
+      state = { lastJobReminder: 0, evalFailures: 0, ownMessageIds: new Set(), lastToolAt: 0, lastSteerAt: 0, resets: 0, recovering: false, userStopped: false }
       states.set(sessionId, state)
     }
     return state
   }
+  services.on?.('session/event', (session: { id?: string }, event: { type?: string; data?: any }) => {
+    if (session?.id === undefined || event?.type !== 'turn/end') return
+    const reason = event.data?.reason
+    if (reason?.kind === 'aborted' && reason?.reason?.kind === 'user') {
+      stateFor(String(session.id)).userStopped = true
+    }
+  })
+
   const runFor = (agent: AnyAgent | undefined): RunRecord | undefined => {
     if (agent === undefined) return undefined
     try {
@@ -152,6 +188,21 @@ export function installAgentRunGuards(ctx: any, services: Services, guard: Guard
     return run !== undefined && run.task === NEURAL_PENDULUM_TASK && run.status === 'active' && !tasks.isCompleted(run)
   }
 
+  // A real user message starts a new attempt and resets the no-tool recovery budget.
+  ctx.on('agent/pre-step', ({ agent, messages }: { agent: AnyAgent; messages?: readonly any[] }, next: () => Promise<any>) => {
+    if (agent !== undefined && messages !== undefined) {
+      const state = stateFor(sessionIdOf(agent))
+      for (const message of messages) {
+        if (message?.source?.kind === 'user' && !state.ownMessageIds.has(String(message?.id))) {
+          state.lastSteerAt = 0
+          state.resets = 0
+          state.userStopped = false
+        }
+      }
+    }
+    return next()
+  })
+
   ctx.on('tools/post-execute', async (exec: any, result: any, next: any) => {
     const downstream = await next()
     const run = runFor(exec.agent)
@@ -162,6 +213,9 @@ export function installAgentRunGuards(ctx: any, services: Services, guard: Guard
     const cfg = guard.configuration
     const interval = Number(cfg.jobReminderMinutes ?? 5) * 60_000
     const now = Date.now()
+    state.lastToolAt = now
+    // A real tool result after a continuation/reset means the model is working again.
+    if (state.lastSteerAt > 0 && state.lastToolAt > state.lastSteerAt) state.resets = 0
     if (interval > 0 && now - state.lastJobReminder >= interval) {
       state.lastJobReminder = now
       const reminder = jobReminderText(services, sessionId, run)
@@ -193,18 +247,51 @@ export function installAgentRunGuards(ctx: any, services: Services, guard: Guard
     if (!isPendulumActive(run)) return
     const sessionId = sessionIdOf(agent)
     const state = stateFor(sessionId)
+    if (state.recovering) return
     // A real user message / explicit stop must pass through. Our own notices are
     // user-role messages too; ignore those by id.
     const pending = [...(agent.inbox?.nextTurn ?? []), ...(agent.inbox?.nextStep ?? [])]
       .some(message => message?.source?.kind === 'user' && !state.ownMessageIds.has(String(message?.id)))
     if (pending) return
     if (typeof agent.steer !== 'function') return
+    const now = Date.now()
     const last = tasks.lastTest(run)
     const jobs = activeJobs(services, sessionId).length
-    const procs = workspaceProcesses(run.workspacePath).length
-    const text = failureText(last, state.evalFailures) +
-      (jobs + procs > 0 ? '\nThere are ' + String(jobs) + ' host jobs and ' + String(procs) + ' workspace processes running; clean the unused ones first.' : '')
-    const message = makeNotice(text)
+    // The model already had one continuation after its last tool call and
+    // produced another text-only final. Do not inject the same message forever:
+    // close this turn and start one fresh turn with an action-only prompt.
+    if (state.lastSteerAt > 0 && state.lastToolAt < state.lastSteerAt) {
+      if (state.resets >= 2) {
+        // The model refuses to call tools even after two fresh turns. Stop the
+        // turn without a final answer; the user can resume manually. This is
+        // deliberately bounded rather than an endless same-turn steer loop.
+        try { agent.cancel?.({ kind: 'hook', reason: 'eval-guard: incomplete run keeps producing text-only steps' }) } catch { /* gone */ }
+        return
+      }
+      state.resets += 1
+      state.recovering = true
+      try {
+        agent.cancel?.({ kind: 'hook', reason: 'eval-guard: incomplete run produced no tool call; reopening turn' })
+      } catch {
+        state.recovering = false
+        return
+      }
+      const prompt = actionText(last, jobs) + ' This is a fresh turn; call a tool in your first response.'
+      const message = makeNotice(prompt)
+      state.ownMessageIds.add(String(message.id))
+      void (agent.whenIdle?.() ?? Promise.resolve()).then(() => {
+        state.recovering = false
+        // A real user message reset lastSteerAt; do not override a manual turn.
+        if (state.lastSteerAt === 0 || state.userStopped) return
+        if (!isPendulumActive(run) || typeof agent.followup !== 'function') return
+        state.lastSteerAt = Date.now()
+        agent.followup(message)
+      }).catch(() => { state.recovering = false })
+      return
+    }
+    // New tool work (or the first incomplete final): ask once for action.
+    state.lastSteerAt = now
+    const message = makeNotice(actionText(last, jobs))
     state.ownMessageIds.add(String(message.id))
     agent.steer(message)
   })

@@ -53,7 +53,7 @@ export function apply(ctx: Context, config: Partial<import('./config.ts').Config
     guard.onRunAssociated = (agent, run) => { registerAgentSubmissionTools(agent as any, guard, tasks) }
     guard.onAutoRun = (agent, cwd) => tasks.autoBind(agent as any, cwd)
     registerRoutes(ctx, guard, tasks)
-    installAgentRunGuards(child, { jobs: services.jobs }, guard, tasks)
+    installAgentRunGuards(child, { jobs: services.jobs, on: services.on }, guard, tasks)
     child.inject(['settings'], (settingsCtx) => {
       const settings = settingsCtx.get('settings') as {
         configure(options: { auto: boolean }, fiber: unknown): () => void
